@@ -1,0 +1,35 @@
+{
+  "name": "clstr-ca-portal",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "@tanstack/react-virtual": "^3.14.5",
+    "@types/react-i18next": "^7.8.3",
+    "focus-trap-react": "^12.0.3",
+    "framer-motion": "^11.15.0",
+    "i18next": "^26.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-dropzone": "^15.0.0",
+    "react-i18next": "^17.0.8",
+    "rollup-plugin-visualizer": "^7.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5"
+  }
+}
