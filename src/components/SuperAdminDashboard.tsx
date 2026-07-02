@@ -13,6 +13,7 @@ import { useState, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRequireRole } from "../lib/auth";
 import { supabase } from "../lib/supabaseClient";
+import { fetchAllColleges, type CollegeOption } from "../lib/supabase";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,6 +44,17 @@ function useAllProfiles() {
       return data ?? [];
     },
     staleTime: 30_000,
+  });
+}
+
+/** Load all colleges from admin_college_stats_v2 (secondary DB) */
+function useColleges() {
+  return useQuery({
+    queryKey: ["all_colleges"],
+    queryFn: fetchAllColleges,
+    staleTime: 10 * 60_000, // cache 10 min — doesn't change often
+    placeholderData: [],
+    retry: 1,
   });
 }
 
@@ -185,9 +197,133 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
+// ─── College dropdown (loaded from secondary DB) ─────────────────────────────
+
+function CollegeDropdown({
+  value, onChange, colleges, isLoading,
+}: {
+  value: string;
+  onChange: (domain: string) => void;
+  colleges: CollegeOption[];
+  isLoading: boolean;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const selected = colleges.find(c => c.canonicalDomain === value);
+
+  const filtered = useMemo(() => {
+    if (!search) return colleges;
+    const q = search.toLowerCase();
+    return colleges.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      c.canonicalDomain.toLowerCase().includes(q) ||
+      (c.city ?? "").toLowerCase().includes(q)
+    );
+  }, [colleges, search]);
+
+  // If no colleges loaded from DB, fall back to text input
+  if (!isLoading && colleges.length === 0) {
+    return (
+      <div className="space-y-1">
+        <input
+          id="ca-college"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder="e.g. raghuinstitute (manual entry)"
+          className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#333] rounded-lg text-sm text-[#F0F0F0] placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 transition-all"
+        />
+        <p className="text-[9px] text-[#FF5500]">Secondary DB not connected — enter canonical_domain manually</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      {/* Trigger */}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] rounded-lg text-sm text-left flex items-center justify-between gap-2 hover:border-[#C8FF00]/30 focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 transition-all"
+      >
+        {isLoading ? (
+          <span className="text-[#333] flex items-center gap-2">
+            <motion.span className="w-3 h-3 border border-[#444] border-t-[#C8FF00] rounded-full" animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }} />
+            Loading colleges…
+          </span>
+        ) : selected ? (
+          <span className="flex-1 min-w-0">
+            <span className="text-[#F0F0F0] font-semibold truncate block">{selected.name}</span>
+            <span className="text-[9px] text-[#555] font-mono">{selected.canonicalDomain}</span>
+          </span>
+        ) : (
+          <span className="text-[#333]">{colleges.length > 0 ? "Select a college…" : "Loading…"}</span>
+        )}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-[#444]">
+          <polyline points={open ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
+        </svg>
+      </button>
+
+      {/* Dropdown list */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scaleY: 0.97 }}
+            animate={{ opacity: 1, y: 0, scaleY: 1 }}
+            exit={{ opacity: 0, y: -4, scaleY: 0.97 }}
+            transition={{ duration: 0.12 }}
+            className="absolute z-50 top-full mt-1 left-0 right-0 bg-[#111] border border-[#222] rounded-xl shadow-2xl overflow-hidden"
+            style={{ maxHeight: 260 }}
+          >
+            {/* Search */}
+            <div className="px-3 py-2 border-b border-[#1A1A1A]">
+              <input
+                autoFocus
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search by name, domain, city…"
+                className="w-full bg-transparent text-sm text-[#F0F0F0] placeholder-[#333] focus:outline-none"
+              />
+            </div>
+            {/* Options */}
+            <div className="overflow-y-auto" style={{ maxHeight: 200 }}>
+              {filtered.length === 0 ? (
+                <p className="px-4 py-3 text-xs text-[#444]">No colleges match</p>
+              ) : filtered.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => { onChange(c.canonicalDomain); setOpen(false); setSearch(""); }}
+                  className={`w-full px-4 py-2.5 text-left flex items-center justify-between gap-3 hover:bg-white/[0.04] transition-colors ${
+                    c.canonicalDomain === value ? "bg-[#C8FF00]/5" : ""
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className={`text-sm font-semibold truncate ${c.canonicalDomain === value ? "text-[#C8FF00]" : "text-[#F0F0F0]"}`}>{c.name}</p>
+                    <p className="text-[9px] font-mono text-[#444] truncate">{c.canonicalDomain}{c.city ? ` · ${c.city}` : ""}</p>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#555] shrink-0 tabular-nums">{c.totalUsers.toLocaleString()} users</span>
+                </button>
+              ))}
+            </div>
+            <div className="px-3 py-1.5 border-t border-[#1A1A1A]">
+              <p className="text-[9px] text-[#333]">{colleges.length} colleges from Clstr DB</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Create CA Modal ──────────────────────────────────────────────────────────
 
-function CreateCAModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+function CreateCAModal({ onClose, onSuccess, colleges, collegesLoading }: {
+  onClose: () => void;
+  onSuccess: () => void;
+  colleges: CollegeOption[];
+  collegesLoading: boolean;
+}) {
   const [form, setForm] = useState({
     fullName: "", email: "", password: "",
     college: "", role: "LEAD" as "MEMBER" | "LEAD", tier: "2",
@@ -296,9 +432,13 @@ function CreateCAModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
             </div>
 
             <div className="space-y-1.5">
-              <Label>Campus / College (canonical domain)</Label>
-              <Input id="ca-college" value={form.college} onChange={set("college")} placeholder="e.g. raghuinstitute" />
-              <p className="text-[9px] text-[#3A3A3A]">Must match canonical_domain in admin_college_stats_v2</p>
+              <Label>Campus / College</Label>
+              <CollegeDropdown
+                value={form.college}
+                onChange={set("college")}
+                colleges={colleges}
+                isLoading={collegesLoading}
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -457,6 +597,7 @@ export default function SuperAdminDashboard() {
   const user = useRequireRole("SUPER_ADMIN");
   const qc = useQueryClient();
   const { data: profiles = [], isLoading } = useAllProfiles();
+  const { data: colleges = [], isLoading: collegesLoading } = useColleges();
 
   const [showCreate, setShowCreate] = useState(false);
   const [editTarget, setEditTarget] = useState<CAProfile | null>(null);
@@ -634,6 +775,8 @@ export default function SuperAdminDashboard() {
           <CreateCAModal
             onClose={() => setShowCreate(false)}
             onSuccess={refresh}
+            colleges={colleges}
+            collegesLoading={collegesLoading}
           />
         )}
         {editTarget && (
