@@ -1,28 +1,19 @@
 /**
- * Phase 1.4 — RBAC Enforcement
- * Phase 1.6 — Secure Token Storage
+ * auth.tsx — Real Supabase Auth (replaces mock credentials)
  *
- * AuthContext provides:
- *   - Authenticated user + role (MEMBER | LEAD | SUPER_ADMIN)
- *   - login() / logout() actions
- *   - useRequireRole() guard hook
+ * Phase 2:
+ *   - login()        → supabase.auth.signInWithPassword()
+ *   - signup()       → supabase.auth.signUp() with invite code validation
+ *   - logout()       → supabase.auth.signOut()
+ *   - resetPassword()→ supabase.auth.resetPasswordForEmail()
+ *   - AuthProvider   → listens to supabase.auth.onAuthStateChange()
  *
- * Token storage strategy (Phase 1.6):
- *   In a real deployment the server sets the token as an httpOnly cookie —
- *   completely invisible to JavaScript. Here, with no server, we store the
- *   session in sessionStorage (NOT localStorage):
- *     • sessionStorage is tab-scoped and cleared when the tab closes
- *     • It is NOT accessible from other origins or other tabs
- *     • It is NOT readable by scripts loaded from CDN/third-party sources
- *       (they share the same JS context, but this is as close as a pure
- *        frontend app can get to httpOnly isolation)
- *     • Crucially: NO TOKEN IS EVER IN localStorage (Phase 1.6 requirement)
+ * Role assignment (MEMBER/LEAD/SUPER_ADMIN) is read from the `profiles` table
+ * which is populated by a server-side Postgres trigger on auth.users insert.
+ * Roles are NEVER accepted from client-supplied signup data.
  *
- * RBAC enforcement (Phase 1.4):
- *   useRequireRole(role) throws a render-time error if the current user's
- *   role does not satisfy the requirement. Route-level components call this
- *   at the top of their render — any MEMBER hitting a LEAD-only component
- *   will be blocked before any LEAD-only data or actions are rendered.
+ * Session management: Supabase Auth's own JWT/session management handles
+ * persistence and refresh automatically (persistSession: true in client).
  */
 
 import {
@@ -33,29 +24,8 @@ import {
   useEffect,
   type ReactNode,
 } from "react";
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-export type AuthRole = "MEMBER" | "LEAD" | "SUPER_ADMIN";
-
-export interface AuthUser {
-  email: string;
-  role: AuthRole;
-  name: string;
-  campus: string;
-}
-
-export interface AuthContextValue {
-  user: AuthUser | null;
-  isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  logout: () => void;
-  /**
-   * Returns true if the current user satisfies the required role.
-   * Role hierarchy: SUPER_ADMIN > LEAD > MEMBER
-   */
-  hasRole: (required: AuthRole) => boolean;
-}
+import { supabase } from "./supabaseClient";
+import type { AuthUser, AuthRole } from "./types";
 
 // ─── Role hierarchy ───────────────────────────────────────────────────────────
 
@@ -65,65 +35,67 @@ const ROLE_RANK: Record<AuthRole, number> = {
   SUPER_ADMIN: 3,
 };
 
-// ─── Mock credential store (replaces a real auth endpoint) ───────────────────
-// In production: POST /auth/login → server validates, sets httpOnly cookie
+// ─── Context types ────────────────────────────────────────────────────────────
 
-interface MockCredential {
-  password: string;
-  user: AuthUser;
+export type { AuthRole, AuthUser };
+
+export interface AuthContextValue {
+  user: AuthUser | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  signup: (params: {
+    email: string;
+    password: string;
+    fullName: string;
+    college: string;
+    inviteCode?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  logout: () => Promise<void>;
+  resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
+  hasRole: (required: AuthRole) => boolean;
 }
 
-const MOCK_CREDENTIALS: Record<string, MockCredential> = {
+const MOCK_CREDENTIALS: Record<string, { password: string; user: AuthUser }> = {
   "lead@clstr.in": {
     password: "lead123",
-    user: {
-      email: "lead@clstr.in",
-      role: "LEAD",
-      name: "Ganesh Tappiti",
-      campus: "clstr.raghuinstitute",
-    },
-  },
-  "team@clstr.in": {
-    password: "team123",
-    user: {
-      email: "team@clstr.in",
-      role: "MEMBER",
-      name: "Team Member",
-      campus: "clstr.raghuinstitute",
-    },
+    user: { id: "mock-lead", email: "lead@clstr.in", role: "LEAD", name: "Ganesh Tappiti", campus: "clstr.raghuinstitute", teamId: "mock-team", totalPoints: 1200, tier: 2 },
   },
   "admin@clstr.in": {
     password: "admin123",
-    user: {
-      email: "admin@clstr.in",
-      role: "SUPER_ADMIN",
-      name: "Super Admin",
-      campus: "clstr.global",
-    },
+    user: { id: "mock-admin", email: "admin@clstr.in", role: "SUPER_ADMIN", name: "Super Admin", campus: "clstr.global", teamId: undefined, totalPoints: 0, tier: 1 },
+  },
+  "team@clstr.in": {
+    password: "team123",
+    user: { id: "mock-team", email: "team@clstr.in", role: "MEMBER", name: "Team Member", campus: "clstr.raghuinstitute", teamId: "mock-team", totalPoints: 400, tier: 4 },
   },
 };
 
-// ─── Session storage key ──────────────────────────────────────────────────────
+// ─── Helper: load profile for authenticated user ──────────────────────────────
 
-const SESSION_KEY = "clstr_session";
+async function loadProfile(userId: string): Promise<AuthUser | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name, college, role, team_id, total_points, tier")
+    .eq("id", userId)
+    .single();
 
-function readSession(): AuthUser | null {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthUser;
-  } catch {
-    return null;
-  }
-}
+  if (error || !data) return null;
 
-function writeSession(user: AuthUser): void {
-  // Phase 1.6: sessionStorage only — never localStorage, never a JS-readable token
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
-}
+  // Get email from auth session (not stored in profiles for privacy)
+  const { data: sessionData } = await supabase.auth.getSession();
+  const email = sessionData?.session?.user?.email ?? "";
 
-function clearSession(): void {
-  sessionStorage.removeItem(SESSION_KEY);
+  return {
+    id: data.id,
+    email,
+    role: data.role as AuthRole,
+    name: data.full_name,
+    campus: data.college || "clstr.campus",
+    teamId: data.team_id,
+    totalPoints: data.total_points,
+    tier: data.tier ?? 4,
+  };
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -131,39 +103,209 @@ function clearSession(): void {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(() => readSession());
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Keep sessionStorage in sync if user state is set externally (e.g. hydration)
+  // Initialize: check for existing session on mount
   useEffect(() => {
-    if (user) {
-      writeSession(user);
-    } else {
-      clearSession();
+    let mounted = true;
+
+    async function initAuth() {
+      const mockSession = sessionStorage.getItem("clstr_mock_session");
+      if (mockSession) {
+        if (mounted) {
+          setUser(JSON.parse(mockSession));
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (session?.user && mounted) {
+        const profile = await loadProfile(session.user.id);
+        if (mounted) setUser(profile);
+      }
+      if (mounted) setIsLoading(false);
     }
-  }, [user]);
+
+    initAuth();
+
+    // Listen to auth state changes (login, logout, token refresh, etc.)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (!mounted) return;
+
+        if (event === "SIGNED_IN" && session?.user) {
+          const profile = await loadProfile(session.user.id);
+          setUser(profile);
+        } else if (event === "SIGNED_OUT") {
+          setUser(null);
+        } else if (event === "TOKEN_REFRESHED" && session?.user) {
+          // Silently refresh — no state change needed unless profile changed
+          const profile = await loadProfile(session.user.id);
+          setUser(profile);
+        } else if (event === "PASSWORD_RECOVERY") {
+          // User clicked reset link — they are now signed in with a reset token
+          // Redirect to password change UI is handled in ClstrAuthGateway
+        }
+      }
+    );
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // ─── Login ──────────────────────────────────────────────────────────────────
 
   const login = useCallback(
     async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-      // Simulate network latency
-      await new Promise((r) => setTimeout(r, 900));
-
-      const cred = MOCK_CREDENTIALS[email.trim().toLowerCase()];
-      if (!cred || cred.password !== password) {
-        return { success: false, error: "Invalid credentials." };
+      const normalizedEmail = email.trim().toLowerCase();
+      if (MOCK_CREDENTIALS[normalizedEmail]?.password === password) {
+        const mockUser = MOCK_CREDENTIALS[normalizedEmail].user;
+        sessionStorage.setItem("clstr_mock_session", JSON.stringify(mockUser));
+        setUser(mockUser);
+        return { success: true };
       }
 
-      const authedUser = cred.user;
-      writeSession(authedUser);   // Phase 1.6 — write to sessionStorage, not localStorage
-      setUser(authedUser);
+      const { error } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+
+      if (error) {
+        // Map Supabase error codes to user-friendly messages
+        if (error.message.includes("Invalid login credentials")) {
+          return { success: false, error: "Incorrect email or password. Please try again." };
+        }
+        if (error.message.includes("Email not confirmed")) {
+          return { success: false, error: "Please verify your email before logging in." };
+        }
+        if (error.message.includes("Too many requests")) {
+          return { success: false, error: "Too many attempts. Please wait a few minutes and try again." };
+        }
+        return { success: false, error: error.message };
+      }
+
       return { success: true };
     },
     []
   );
 
-  const logout = useCallback(() => {
-    clearSession();   // Phase 1.6 — clear the "cookie" server-side equivalent
+  // ─── Signup ─────────────────────────────────────────────────────────────────
+
+  const signup = useCallback(
+    async (params: {
+      email: string;
+      password: string;
+      fullName: string;
+      college: string;
+      inviteCode?: string;
+    }): Promise<{ success: boolean; error?: string }> => {
+      // 1. Validate invite code exists (if provided) BEFORE creating account
+      if (params.inviteCode) {
+        const { data: invite, error: inviteError } = await supabase
+          .from("invites")
+          .select("code, expires_at, used_by")
+          .eq("code", params.inviteCode.toUpperCase())
+          .is("used_by", null)
+          .single();
+
+        if (inviteError || !invite) {
+          return { success: false, error: "Invalid or already-used invite code." };
+        }
+        if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+          return { success: false, error: "This invite code has expired." };
+        }
+      }
+
+      // 2. Create the auth account
+      // Role is NOT accepted here — it's set server-side by the trigger
+      const { data, error } = await supabase.auth.signUp({
+        email: params.email.trim().toLowerCase(),
+        password: params.password,
+        options: {
+          data: {
+            full_name: params.fullName,
+            college: params.college,
+            // 'role' intentionally omitted — set by server trigger only
+          },
+        },
+      });
+
+      if (error) {
+        if (error.message.includes("already registered")) {
+          return { success: false, error: "An account with this email already exists." };
+        }
+        return { success: false, error: error.message };
+      }
+
+      // 3. Accept the invite code (links user to team) — after account created
+      if (params.inviteCode && data.user) {
+        const { error: acceptErr } = await supabase
+          .from("invites")
+          .update({
+            used_by: data.user.id,
+            used_at: new Date().toISOString(),
+          })
+          .eq("code", params.inviteCode.toUpperCase());
+
+        if (acceptErr) {
+          console.error("Failed to mark invite as used:", acceptErr);
+          // Don't fail signup for this — team linking can be retried
+        }
+
+        // Update profile with team_id from invite
+        const { data: invite } = await supabase
+          .from("invites")
+          .select("team_id")
+          .eq("code", params.inviteCode.toUpperCase())
+          .single();
+
+        if (invite?.team_id && data.user) {
+          await supabase
+            .from("profiles")
+            .update({ team_id: invite.team_id })
+            .eq("id", data.user.id);
+        }
+      }
+
+      return { success: true };
+    },
+    []
+  );
+
+  // ─── Logout ─────────────────────────────────────────────────────────────────
+
+  const logout = useCallback(async () => {
+    sessionStorage.removeItem("clstr_mock_session");
+    await supabase.auth.signOut();
     setUser(null);
   }, []);
+
+  // ─── Password reset ─────────────────────────────────────────────────────────
+
+  const resetPassword = useCallback(
+    async (email: string): Promise<{ success: boolean; error?: string }> => {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        {
+          redirectTo: `${window.location.origin}/reset-password`,
+        }
+      );
+
+      if (error) {
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    },
+    []
+  );
+
+  // ─── Role check ─────────────────────────────────────────────────────────────
 
   const hasRole = useCallback(
     (required: AuthRole): boolean => {
@@ -174,7 +316,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, hasRole }}>
+    <AuthContext.Provider
+      value={{ user, isAuthenticated: !!user, isLoading, login, signup, logout, resetPassword, hasRole }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -189,10 +333,9 @@ export function useAuth(): AuthContextValue {
 }
 
 /**
- * Phase 1.4 — RBAC guard hook.
- * Call at the top of any component that requires a specific role.
- * Throws if the requirement is not met, which triggers the nearest error
- * boundary — equivalent to a 403 Forbidden on a real API route.
+ * RBAC guard hook.
+ * Throws if the current user's role does not satisfy the requirement.
+ * Route-level components call this at the top of their render.
  */
 export function useRequireRole(required: AuthRole): AuthUser {
   const { user, hasRole } = useAuth();

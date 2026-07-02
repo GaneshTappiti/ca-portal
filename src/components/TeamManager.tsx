@@ -2,7 +2,7 @@ import { useState, useCallback, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useTeamStore } from "../lib/store";
-import { inviteSchema, parseErrors } from "../lib/schemas";
+import { useAuth } from "../lib/auth";
 import type { AuthRole } from "../lib/auth";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -68,23 +68,23 @@ const MemberRow = memo(function MemberRow({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
-      className="flex items-center gap-3 px-3 py-3 rounded-xl bg-white/[0.02] border border-[#1A1A1A]/50"
+      className="flex items-center gap-3 px-3 py-3 rounded-xl bg-[#111] border border-[#222]"
     >
-      <div className="w-8 h-8 rounded-full bg-[#1A1A1A] flex items-center justify-center text-xs font-bold text-[#999]">
+      <div className="w-8 h-8 rounded-full bg-[#1A1A1A] flex items-center justify-center text-xs font-bold text-[#666]">
         {name.charAt(0).toUpperCase()}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-white truncate">{name}</p>
+        <p className="text-sm font-semibold text-[#F0F0F0] truncate">{name}</p>
         <p className="text-[10px] text-[#555] truncate">{domain || email}</p>
       </div>
-      <span className="text-[10px] text-[#555] hidden sm:block whitespace-nowrap">
+      <span className="text-[10px] text-[#444] hidden sm:block whitespace-nowrap font-mono">
         {t("team.joinedAt", { date: new Date(joinedAt).toLocaleDateString() })}
       </span>
       {canRemove && (
         <button
           onClick={() => onRemove(email)}
           aria-label={`Remove ${name} from team`}
-          className="p-1.5 rounded-lg hover:bg-[#FF6A00]/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF6A00]/50"
+          className="p-1.5 rounded-lg hover:bg-[#FF5500]/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF5500]/50"
         >
           <TrashIcon />
         </button>
@@ -92,6 +92,12 @@ const MemberRow = memo(function MemberRow({
     </motion.div>
   );
 });
+
+// ─── Derive CA ID (same as dashboard) ─────────────────────────────────────────
+
+function deriveCAId(id: string): string {
+  return "CA-" + id.replace(/-/g, "").toUpperCase().slice(0, 8);
+}
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -101,66 +107,47 @@ interface TeamManagerProps {
   leadEmail: string;
 }
 
-const DOMAINS = ["Clubs & Events", "Placement & Career", "Community", "Growth & Outreach", "CollabHub"];
-
 export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerProps) {
   const { t } = useTranslation();
-  const { members, invites, generateInvite, acceptInvite, removeMember } = useTeamStore();
+  const { user } = useAuth();
+  const { members, acceptInvite, removeMember } = useTeamStore(
+    user?.teamId ?? "",
+    user?.id ?? ""
+  );
 
-  const [codeInput, setCodeInput] = useState("");
-  const [nameInput, setNameInput] = useState("");
-  const [selectedDomain, setSelectedDomain] = useState(DOMAINS[0]);
-  const [joinError, setJoinError] = useState<string | null>(null);
+  const [codeInput, setCodeInput]     = useState("");
+  const [joinError, setJoinError]     = useState<string | null>(null);
   const [joinSuccess, setJoinSuccess] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied]           = useState(false);
 
-  const latestInvite = invites.find((i) => !i.usedBy);
+  const caId = deriveCAId(user?.id ?? "MOCK0001");
 
-  const handleGenerateInvite = useCallback(() => {
-    generateInvite(userEmail, selectedDomain);
-  }, [generateInvite, userEmail, selectedDomain]);
-
-  const handleCopy = useCallback(() => {
-    if (!latestInvite) return;
-    navigator.clipboard.writeText(latestInvite.code).then(() => {
+  const handleCopyCAId = useCallback(() => {
+    navigator.clipboard.writeText(caId).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-  }, [latestInvite]);
+  }, [caId]);
 
-  const handleJoin = useCallback(() => {
+  const handleJoin = useCallback(async () => {
     setJoinError(null);
     setJoinSuccess(false);
-
-    const validation = inviteSchema.safeParse({ code: codeInput });
-    if (!validation.success) {
-      const errs = parseErrors(validation);
-      setJoinError(errs["code"] ?? t("errors.genericError"));
-      return;
-    }
-
-    const result = acceptInvite(
-      codeInput.trim(),
-      userEmail,
-      nameInput.trim() || userEmail,
-      leadEmail
-    );
-
-    if (result.success) {
+    if (!codeInput.trim()) { setJoinError("Please enter your CA invite code."); return; }
+    try {
+      await acceptInvite({ code: codeInput.trim(), userId: user?.id ?? "" });
       setJoinSuccess(true);
       setCodeInput("");
-      setNameInput("");
-    } else {
-      setJoinError(result.error ?? t("errors.genericError"));
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : t("errors.genericError"));
     }
-  }, [codeInput, nameInput, userEmail, leadEmail, acceptInvite, t]);
+  }, [codeInput, user, acceptInvite, t]);
 
   const handleRemove = useCallback(
-    (email: string) => removeMember(email),
+    (id: string) => removeMember(id),
     [removeMember]
   );
 
-  const currentUserDomain = members.find(m => m.email === userEmail)?.domain || "Unknown";
+  const currentUserDomain = "";
 
   // MEMBER view
   if (role === "MEMBER") {
@@ -168,47 +155,35 @@ export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerP
     return (
       <section
         aria-labelledby="team-section-heading"
-        className="rounded-2xl bg-[#0A0A0A]/80 backdrop-blur-xl border border-[#1A1A1A]/50 p-5 sm:p-6 shadow-[0_0_40px_rgba(255,255,255,0.03)]"
+        className="rounded-2xl bg-[#111] border border-[#222] p-5 sm:p-6 space-y-4"
       >
-        <h2 id="team-section-heading" className="text-sm font-bold text-white mb-4">
+        <h2 id="team-section-heading" className="text-sm font-bold text-[#F0F0F0]">
           {t("team.title")}
         </h2>
 
         {isInTeam ? (
-          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#CCFF00]/5 border border-[#CCFF00]/15">
-            <div className="w-8 h-8 rounded-lg bg-[#CCFF00]/10 flex items-center justify-center">
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#C8FF00]/[0.04] border border-[#C8FF00]/15">
+            <div className="w-8 h-8 rounded-lg bg-[#C8FF00]/10 flex items-center justify-center">
               <UserIcon />
             </div>
-            <p className="text-sm text-[#999]">
-              You are a member of the <span className="text-[#CCFF00] font-semibold">clstr.raghuinstitute</span> team.<br/>
-              Assigned Domain: <span className="text-white font-semibold">{currentUserDomain}</span>
+            <p className="text-sm text-[#A0A0A0]">
+              Member of <span className="text-[#C8FF00] font-semibold">clstr.raghuinstitute</span><br/>
+              Domain: <span className="text-[#F0F0F0] font-semibold">{currentUserDomain || "General"}</span>
             </p>
           </div>
         ) : (
           <div className="space-y-3">
             <div className="flex flex-col gap-1">
-              <label htmlFor="join-name" className="text-xs font-semibold text-[#999] uppercase tracking-wider">
-                Your Name
-              </label>
-              <input
-                id="join-name"
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                placeholder="Your full name"
-                className="w-full px-4 py-2.5 rounded-xl bg-[#000] border border-[#1A1A1A] text-sm text-white placeholder-[#444] focus:outline-none focus:border-[#CCFF00]/40 focus:ring-1 focus:ring-[#CCFF00]/20 transition-all"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="join-code" className="text-xs font-semibold text-[#999] uppercase tracking-wider">
-                {t("team.inviteCode")}
+              <label htmlFor="join-code" className="text-[10px] font-bold text-[#555] uppercase tracking-wider">
+                Enter CA Invite Code
               </label>
               <input
                 id="join-code"
                 value={codeInput}
                 onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
-                placeholder={t("team.enterCode")}
+                placeholder="CA-XXXXXXXX"
                 aria-describedby={joinError ? "join-error" : undefined}
-                className="w-full px-4 py-2.5 rounded-xl bg-[#000] border border-[#1A1A1A] text-sm text-white placeholder-[#444] focus:outline-none focus:border-[#CCFF00]/40 focus:ring-1 focus:ring-[#CCFF00]/20 transition-all font-mono uppercase tracking-widest"
+                className="w-full px-4 py-2.5 bg-[#0A0A0A] border border-[#222] text-sm text-[#F0F0F0] placeholder-[#2E2E2E] focus:outline-none focus:border-[#C8FF00]/40 focus:ring-1 focus:ring-[#C8FF00]/20 transition-all font-mono uppercase tracking-widest"
               />
             </div>
 
@@ -220,7 +195,7 @@ export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerP
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  className="text-xs text-[#FF6A00] font-medium"
+                  className="text-xs text-[#FF5500] font-medium"
                 >
                   {joinError}
                 </motion.p>
@@ -231,7 +206,7 @@ export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerP
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  className="text-xs text-[#CCFF00] font-medium"
+                  className="text-xs text-[#C8FF00] font-medium"
                 >
                   Successfully joined the team!
                 </motion.p>
@@ -240,21 +215,20 @@ export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerP
 
             <button
               onClick={handleJoin}
-              className="w-full px-4 py-2.5 rounded-xl bg-[#CCFF00] text-[#000] text-sm font-bold hover:opacity-90 active:scale-[0.97] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
+              className="w-full px-4 py-2.5 bg-[#C8FF00] text-[#000] text-sm font-black hover:opacity-90 active:scale-[0.97] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C8FF00]/50"
             >
-              {t("team.joinButton")}
+              Join Team
             </button>
           </div>
         )}
 
-        {/* Restricted notice */}
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#FF6A00]/5 border border-[#FF6A00]/15 mt-4">
-          <div className="w-8 h-8 rounded-lg bg-[#FF6A00]/10 flex items-center justify-center shrink-0">
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#FF5500]/[0.04] border border-[#FF5500]/15">
+          <div className="w-8 h-8 rounded-lg bg-[#FF5500]/10 flex items-center justify-center shrink-0">
             <LockIcon />
           </div>
-          <p className="text-sm text-[#999]">
+          <p className="text-sm text-[#666]">
             {t("team.restrictedMsg")}{" "}
-            <span className="text-[#FF6A00] font-semibold">Campus Captain</span>.
+            <span className="text-[#FF5500] font-semibold">Campus Captain</span>.
           </p>
         </div>
       </section>
@@ -265,77 +239,95 @@ export default function TeamManager({ role, userEmail, leadEmail }: TeamManagerP
   return (
     <section
       aria-labelledby="team-section-heading"
-      className="rounded-2xl bg-[#0A0A0A]/80 backdrop-blur-xl border border-[#1A1A1A]/50 p-5 sm:p-6 shadow-[0_0_40px_rgba(255,255,255,0.03)] space-y-5"
+      className="rounded-2xl bg-[#111] border border-[#222] p-5 sm:p-6 space-y-5"
     >
       <div className="flex items-center justify-between">
-        <h2 id="team-section-heading" className="text-sm font-bold text-white">
+        <h2 id="team-section-heading" className="text-sm font-bold text-[#F0F0F0]">
           {t("team.title")}
         </h2>
       </div>
 
-      {/* Invite code generator */}
-      <div className="rounded-xl bg-[#000]/40 border border-[#1A1A1A]/30 p-4 space-y-3">
-        <p className="text-xs font-semibold text-[#999] uppercase tracking-wider">{t("team.inviteCode")}</p>
-
-        <div className="flex flex-col gap-1 mb-2">
-          <label htmlFor="domain-select" className="text-[10px] text-[#666] uppercase">Select Domain Role</label>
-          <select 
-            id="domain-select"
-            value={selectedDomain}
-            onChange={(e) => setSelectedDomain(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg bg-[#0A0A0A] border border-[#1A1A1A] text-sm text-white focus:outline-none focus:border-[#CCFF00]/40"
-          >
-            {DOMAINS.map(d => <option key={d} value={d}>{d}</option>)}
-          </select>
+      {/* CA ID = Invite Code */}
+      <div className="rounded-xl bg-[#0A0A0A] border border-[#222] p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-bold text-[#555] uppercase tracking-wider">Your Invite Code</p>
+          <span className="text-[9px] font-mono text-[#3A3A3A] uppercase tracking-wider">= your CA ID</span>
         </div>
 
-        {latestInvite ? (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <code className="flex-1 px-3 py-2 rounded-lg bg-[#0A0A0A] border border-[#1A1A1A] text-sm font-mono text-[#CCFF00] tracking-widest">
-                {latestInvite.code}
-              </code>
-              <button
-                onClick={handleCopy}
-                aria-label="Copy invite code"
-                className="px-3 py-2 rounded-lg border border-[#1A1A1A] hover:border-[#333] text-[#666] hover:text-white transition-colors flex items-center gap-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
-              >
-                <CopyIcon />
-                {copied ? "Copied!" : "Copy"}
-              </button>
-            </div>
-            <p className="text-[10px] text-[#CCFF00]">
-              This code will assign the user to: <span className="font-bold">{latestInvite.domain}</span>
-            </p>
-          </div>
-        ) : (
-          <p className="text-xs text-[#555]">No active invite code. Generate one below.</p>
-        )}
+        {/* Static CA ID display */}
+        <div className="flex items-center gap-2">
+          <code className="flex-1 px-4 py-2.5 bg-[#000] border border-[#C8FF00]/20 text-sm font-mono font-black text-[#C8FF00] tracking-[0.2em] select-all">
+            {caId}
+          </code>
+          <button
+            onClick={handleCopyCAId}
+            aria-label="Copy invite code"
+            className="px-3 py-2.5 border border-[#222] hover:border-[#C8FF00]/30 text-[#555] hover:text-[#C8FF00] transition-colors flex items-center gap-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]/50"
+          >
+            <CopyIcon />
+            {copied ? "Copied!" : "Copy"}
+          </button>
+        </div>
 
-        <button
-          onClick={handleGenerateInvite}
-          className="w-full px-4 py-2.5 rounded-xl bg-[#CCFF00] text-[#000] text-sm font-bold hover:opacity-90 active:scale-[0.97] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
-        >
-          {t("team.generateInvite")}
-        </button>
+        <p className="text-[10px] text-[#444] leading-relaxed">
+          Share this code with students joining your team. It's permanently tied to your CA profile — no need to generate a new one.
+        </p>
+
+        {/* Supabase SQL reference */}
+        <details className="group">
+          <summary className="text-[9px] font-bold text-[#333] uppercase tracking-wider cursor-pointer hover:text-[#555] transition-colors list-none flex items-center gap-1">
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="group-open:rotate-90 transition-transform" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+            Supabase SQL Setup
+          </summary>
+          <pre className="mt-2 p-3 bg-[#000] border border-[#1A1A1A] text-[10px] font-mono text-[#4488FF] overflow-x-auto leading-relaxed whitespace-pre">{`-- team_members table
+CREATE TABLE IF NOT EXISTS team_members (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id     TEXT NOT NULL,
+  user_id     UUID REFERENCES auth.users(id),
+  invite_code TEXT NOT NULL,   -- = CA-XXXXXXXX
+  domain_role TEXT,
+  joined_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Validate invite code (= CA ID) on join
+CREATE OR REPLACE FUNCTION accept_ca_invite(
+  p_invite_code TEXT,
+  p_user_id     UUID
+) RETURNS VOID AS $$
+DECLARE
+  v_team_id TEXT;
+BEGIN
+  SELECT team_id INTO v_team_id
+    FROM ca_profiles
+   WHERE ca_id = p_invite_code
+   LIMIT 1;
+  IF v_team_id IS NULL THEN
+    RAISE EXCEPTION 'Invalid CA invite code';
+  END IF;
+  INSERT INTO team_members (team_id, user_id, invite_code)
+    VALUES (v_team_id, p_user_id, p_invite_code)
+    ON CONFLICT DO NOTHING;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;`}</pre>
+        </details>
       </div>
 
       {/* Member list */}
       <div className="space-y-2">
-        <p className="text-xs font-semibold text-[#999] uppercase tracking-wider">{t("team.members")}</p>
+        <p className="text-[10px] font-bold text-[#555] uppercase tracking-wider">{t("team.members")}</p>
         {members.length === 0 ? (
-          <p className="text-xs text-[#555] py-4 text-center">{t("team.noMembers")}</p>
+          <p className="text-xs text-[#444] py-4 text-center font-mono">No teammates yet. Share your CA ID above to invite members.</p>
         ) : (
           <AnimatePresence>
             {members.map((m) => (
               <MemberRow
-                key={m.email}
+                key={m.id}
                 email={m.email}
                 name={m.name}
-                domain={m.domain}
-                joinedAt={m.joinedAt}
+                domain={""}
+                joinedAt={new Date(m.createdAt).getTime()}
                 canRemove={true}
-                onRemove={handleRemove}
+                onRemove={() => handleRemove(m.id)}
               />
             ))}
           </AnimatePresence>

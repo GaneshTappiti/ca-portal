@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePlanStore } from "../lib/store";
+import { useAuth } from "../lib/auth";
 
 const CLUB_DOMAINS = [
   "Cultural", "Technical", "Sports", "Literary",
@@ -8,21 +9,23 @@ const CLUB_DOMAINS = [
 ];
 
 export default function ClubOnboardingTracker() {
-  const { clubs, addClub, updateClub, removeClub, activeClubsCount, totalOnboardedClubs } = usePlanStore();
+  const { user } = useAuth();
+  const { clubs, addClub, updateClub, removeClub, activeClubsCount, totalOnboardedClubs } = usePlanStore(
+    user?.id ?? "",
+    user?.teamId ?? "",
+    user?.tier ?? 4
+  );
   const [showAdd, setShowAdd] = useState(false);
   const [newClub, setNewClub] = useState({ name: "", domain: CLUB_DOMAINS[0], presidentName: "" });
 
   const handleAdd = () => {
     if (!newClub.name.trim()) return;
     addClub({
-      id: `club-${Date.now()}`,
+      teamId: user?.teamId ?? "",
+      userId: user?.id ?? "",
       name: newClub.name.trim(),
       domain: newClub.domain,
       presidentName: newClub.presidentName.trim() || undefined,
-      onboarded: true,
-      onboardedAt: Date.now(),
-      eventCount: 0,
-      active: true,
     });
     setNewClub({ name: "", domain: CLUB_DOMAINS[0], presidentName: "" });
     setShowAdd(false);
@@ -51,7 +54,7 @@ export default function ClubOnboardingTracker() {
         </div>
         <div className="w-full h-2.5 rounded-full bg-[#1A1A1A] overflow-hidden">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-[#FF6A00] to-[#CCFF00] transition-all"
+            className="h-full rounded-full bg-[#CCFF00] transition-all"
             style={{ width: `${Math.min((activeClubsCount / 8) * 100, 100)}%` }}
           />
         </div>
@@ -146,7 +149,7 @@ export default function ClubOnboardingTracker() {
               </div>
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => updateClub(club.id, { active: !club.active })}
+                  onClick={() => updateClub({ id: club.id, active: !club.active })}
                   className={`px-2 py-1 rounded-lg text-[10px] font-semibold transition-all ${
                     club.active
                       ? "bg-[#CCFF00]/10 text-[#CCFF00] border border-[#CCFF00]/20"

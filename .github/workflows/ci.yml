@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  type-check-and-lint:
+    name: Type Check & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Run unit tests (state machine)
+        run: npx vitest run src/lib/__tests__/
+        env:
+          VITE_SUPABASE_URL: https://placeholder.supabase.co
+          VITE_SUPABASE_ANON_KEY: placeholder-key
+
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: type-check-and-lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://placeholder.supabase.co
+          VITE_SUPABASE_ANON_KEY: placeholder-key
+          VITE_SECONDARY_SUPABASE_URL: ""
+          VITE_SECONDARY_SUPABASE_ANON_KEY: ""
+          VITE_SENTRY_DSN: ""
+          VITE_APP_ENV: ci
+
+  # Uncomment and configure once staging Supabase project is set up:
+  # e2e-smoke:
+  #   name: E2E Smoke Test (Staging)
+  #   runs-on: ubuntu-latest
+  #   needs: build-check
+  #   environment: staging
+  #
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "20"
+  #         cache: "npm"
+  #     - run: npm ci
+  #     - run: npx playwright install --with-deps chromium
+  #     - run: npx playwright test e2e/smoke.spec.ts
+  #       env:
+  #         VITE_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+  #         VITE_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+  #         PLAYWRIGHT_BASE_URL: ${{ secrets.STAGING_APP_URL }}

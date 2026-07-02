@@ -30,7 +30,7 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import FocusTrap from "focus-trap-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useTaskStore, useRealtimeSync, broadcastEvent, useTeamStore } from "./lib/store";
+import { useTaskStore, useTeamStore, broadcastEvent, useRealtimeSync } from "./lib/store";
 import { useAuth } from "./lib/auth";
 import DropZone from "./components/DropZone";
 import type { Task } from "./lib/store";
@@ -161,12 +161,13 @@ function SubmissionModal({
 }: {
   task: Task;
   onClose: () => void;
-  onSubmit: (proofDataUrl: string, notes: string) => void;
+  onSubmit: (proofUrl: string, notes: string) => void;
   triggerRef: React.MutableRefObject<HTMLButtonElement | null>;
   prefersReduced: boolean | null;
 }) {
   const { t } = useTranslation();
-  const [proofDataUrl, setProofDataUrl] = useState("");
+  const { user } = useAuth();
+  const [proofUrl, setProofUrl] = useState("");
   const [proofError, setProofError] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -184,17 +185,15 @@ function SubmissionModal({
     return () => document.removeEventListener("keydown", handler);
   }, [onClose, triggerRef]);
 
-  const handleSubmit = useCallback(() => {
-    if (!proofDataUrl) {
-      setProofError(t("errors.required"));
+  const handleSubmit = useCallback(async () => {
+    if (!proofUrl) {
+      setProofError(t("errors.proofRequired", "Proof file is required."));
       return;
     }
     setSubmitting(true);
-    setTimeout(() => {
-      onSubmit(proofDataUrl, notes.trim());
-      setSubmitting(false);
-    }, 300);
-  }, [proofDataUrl, notes, onSubmit, t]);
+    await onSubmit(proofUrl, notes.trim());
+    setSubmitting(false);
+  }, [proofUrl, notes, onSubmit, t]);
 
   return (
     // Phase 4.1 — FocusTrap keeps Tab/Shift+Tab inside the modal
@@ -226,29 +225,29 @@ function SubmissionModal({
 
         {/* Panel */}
         <motion.div
-          initial={{ opacity: 0, scale: prefersReduced ? 1 : 0.95, y: prefersReduced ? 0 : 40 }}
+          initial={{ opacity: 0, scale: prefersReduced ? 1 : 0.97, y: prefersReduced ? 0 : 24 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: prefersReduced ? 1 : 0.95, y: prefersReduced ? 0 : 40 }}
+          exit={{ opacity: 0, scale: prefersReduced ? 1 : 0.97, y: prefersReduced ? 0 : 24 }}
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
-          className="relative w-full max-w-lg rounded-2xl bg-[#0A0A0A]/90 backdrop-blur-xl border border-[#1A1A1A]/50 p-6 sm:p-8 shadow-[0_0_80px_rgba(255,255,255,0.03)]"
+          className="relative w-full max-w-lg bg-[#111] border border-[#2E2E2E] p-6 sm:p-8"
         >
-          <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#FF6A00] via-[#CCFF00] to-[#0066FF] opacity-60" aria-hidden="true" />
+          <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#C8FF00]" aria-hidden="true" />
 
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex flex-col gap-1">
-              <h2 id={titleId} className="text-lg font-bold text-white">{t("tasks.submitProof")}</h2>
-              <p className="text-xs text-[#666]">{task.title}</p>
+              <h2 id={titleId} className="text-base font-bold text-[#F0F0F0] tracking-tight">{t("tasks.submitProof")}</h2>
+              <p className="text-[11px] text-[#666] font-mono mt-0.5">{task.title}</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className="px-2.5 py-1 rounded-lg bg-[#CCFF00]/10 border border-[#CCFF00]/15 flex items-center gap-1">
+              <span className="flex items-center gap-1 px-2 py-1 border border-[#C8FF00]/20 bg-[#C8FF00]/[0.06]">
                 <PointsIcon />
-                <span className="text-xs font-bold text-[#CCFF00] tabular-nums">+{task.points}</span>
+                <span className="text-[11px] font-black text-[#C8FF00] tabular-nums">+{task.points}</span>
               </span>
               <button
                 onClick={() => { onClose(); triggerRef.current?.focus(); }}
                 aria-label="Close modal"
-                className="p-1.5 rounded-lg hover:bg-white/5 transition-colors text-[#666] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
+                className="p-1.5 hover:bg-[#1A1A1A] transition-colors text-[#444] hover:text-[#F0F0F0] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]"
               >
                 <CloseIcon />
               </button>
@@ -260,8 +259,11 @@ function SubmissionModal({
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-[#999] uppercase tracking-wider">{t("tasks.proofFileLabel")}</label>
               <DropZone
-                onFileAccepted={(url) => { setProofDataUrl(url); setProofError(null); }}
+                onFileAccepted={(url) => { setProofUrl(url); setProofError(null); }}
                 onError={(msg) => setProofError(msg)}
+                userId={user?.id ?? ""}
+                taskDefId={task.taskDefId}
+                currentFileName={proofUrl && !proofUrl.startsWith("data:") ? "Previously uploaded" : undefined}
               />
               {proofError && (
                 <p role="alert" className="text-xs text-[#FF6A00] font-medium">{proofError}</p>
@@ -278,7 +280,7 @@ function SubmissionModal({
                 placeholder={t("tasks.notesPlaceholder")}
                 rows={3}
                 maxLength={1000}
-                className="w-full px-4 py-2.5 rounded-xl bg-[#000000] border border-[#1A1A1A] text-sm text-white placeholder-[#444] focus:outline-none focus:border-[#CCFF00]/40 focus:ring-1 focus:ring-[#CCFF00]/20 transition-all duration-200 resize-none"
+                className="w-full px-4 py-2.5 bg-[#0A0A0A] border border-[#222] text-sm text-[#F0F0F0] placeholder-[#2E2E2E] focus:outline-none focus:border-[#C8FF00]/40 focus:ring-1 focus:ring-[#C8FF00]/20 transition-all duration-200 resize-none"
               />
               <p className="text-[10px] text-[#555] text-right">{notes.length}/1000</p>
             </div>
@@ -287,14 +289,14 @@ function SubmissionModal({
           <div className="flex items-center gap-3 mt-6">
             <button
               onClick={() => { onClose(); triggerRef.current?.focus(); }}
-              className="flex-1 px-4 py-2.5 rounded-xl border border-[#1A1A1A] text-sm font-semibold text-[#666] transition-all duration-200 hover:text-white hover:border-[#333] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#333]"
+              className="flex-1 px-4 py-2.5 border border-[#222] text-sm font-semibold text-[#666] transition-all duration-200 hover:text-[#F0F0F0] hover:border-[#444] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#444]"
             >
               {t("tasks.cancel")}
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!proofDataUrl || submitting}
-              className="flex-1 px-4 py-2.5 rounded-xl bg-[#CCFF00] text-[#000000] text-sm font-bold transition-all duration-200 hover:opacity-90 active:scale-[0.97] disabled:opacity-30 disabled:cursor-not-allowed disabled:active:scale-100 flex items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
+              disabled={!proofUrl || submitting}
+              className="flex-1 px-4 py-2.5 bg-[#C8FF00] text-[#000] text-sm font-black tracking-tight transition-all duration-200 hover:opacity-90 active:scale-[0.97] disabled:opacity-25 disabled:cursor-not-allowed disabled:active:scale-100 flex items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]"
             >
               {submitting ? (
                 <>
@@ -337,47 +339,50 @@ const TaskCard = memo(function TaskCard({
   const { t } = useTranslation();
   
   const isDomainMatch = isLead || task.category === userDomain || task.category === "General";
-  const isDisabled = !isDomainMatch || (task.status !== "Open" && task.status !== "Rejected");
+  const isDisabled = !isDomainMatch || (task.status !== "open" && task.status !== "rejected");
 
   const statusColor =
-    task.status === "Verified" ? "#CCFF00" :
-    task.status === "Pending Review" ? "#FF6A00" :
-    task.status === "Rejected" ? "#FF4040" : "#CCFF00";
+    task.status === "verified" ? "#CCFF00" :
+    task.status === "pending" ? "#FF6A00" :
+    task.status === "rejected" ? "#FF4040" : "#CCFF00";
 
   return (
     <div
-      className="rounded-2xl bg-[#0A0A0A]/80 backdrop-blur-xl border border-[#1A1A1A]/50 p-5 shadow-[0_0_40px_rgba(255,255,255,0.03)] flex flex-col gap-3 relative overflow-hidden group"
+      className="bg-[#111] border border-[#222] flex flex-col gap-0 relative overflow-hidden group"
       style={style}
       aria-label={`${task.title}, ${task.points} points, status: ${task.status}`}
     >
-      <div className="absolute top-0 left-0 right-0 h-0.5 opacity-60" style={{ background: statusColor }} aria-hidden="true" />
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-sm font-bold text-white leading-snug flex-1">{task.title}</h3>
-        <CategoryChip category={task.category} />
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#CCFF00]/10 border border-[#CCFF00]/15">
-          <PointsIcon />
-          <span className="text-xs font-bold text-[#CCFF00] tabular-nums">+{task.points}</span>
+      {/* Status accent — top border, not blurred glow */}
+      <div className="h-[2px] w-full" style={{ background: statusColor }} aria-hidden="true" />
+      <div className="p-4 flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-sm font-bold text-[#F0F0F0] leading-snug flex-1">{task.title}</h3>
+          <CategoryChip category={task.category} />
         </div>
-        {task.status !== "Open" && (
-          <span
-            className="px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wider"
-            style={{ color: statusColor, backgroundColor: `${statusColor}11`, border: `1px solid ${statusColor}22` }}
-          >
-            {task.status}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 px-2 py-0.5 border border-[#C8FF00]/20 bg-[#C8FF00]/[0.06]">
+            <PointsIcon />
+            <span className="text-[11px] font-black text-[#C8FF00] tabular-nums">+{task.points}</span>
+          </div>
+          {task.status !== "open" && (
+            <span
+              className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.1em]"
+              style={{ color: statusColor, border: `1px solid ${statusColor}30` }}
+            >
+              {task.status}
+            </span>
+          )}
+        </div>
+        <button
+          ref={triggerRef}
+          onClick={(e) => { e.stopPropagation(); onExecute(task, triggerRef); }}
+          disabled={isDisabled}
+          className="w-full px-4 py-2 bg-[#C8FF00] text-[#000] text-[11px] font-black tracking-tight transition-all duration-200 hover:opacity-90 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]"
+          aria-label={`Execute task: ${task.title}`}
+        >
+          {!isDomainMatch ? "Not Your Domain" : isDisabled ? task.status : t("tasks.executeTask")}
+        </button>
       </div>
-      <button
-        ref={triggerRef}
-        onClick={(e) => { e.stopPropagation(); onExecute(task, triggerRef); }}
-        disabled={isDisabled}
-        className="mt-1 w-full px-4 py-2 rounded-xl bg-[#CCFF00] text-[#000000] text-xs font-bold tracking-wide transition-all duration-200 hover:opacity-90 active:scale-[0.97] disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#CCFF00]/50"
-        aria-label={`Execute task: ${task.title}`}
-      >
-        {!isDomainMatch ? "Not Your Domain" : isDisabled ? task.status : t("tasks.executeTask")}
-      </button>
     </div>
   );
 });
@@ -396,30 +401,47 @@ function ReviewPanel({
   showToast: (msg: string, type: "success" | "info" | "error") => void;
 }) {
   const { t } = useTranslation();
-  const { approveTask, rejectTask } = useTaskStore();
+  const { user } = useAuth();
+  const { approveTask, rejectTask } = useTaskStore(user?.id ?? "", user?.teamId);
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
   const [rejecting, setRejecting] = useState<string | null>(null);
 
-  const pendingTasks = useMemo(() => tasks.filter((t) => t.status === "Pending Review"), [tasks]);
+  const pendingTasks = useMemo(() => tasks.filter((t) => t.status === "pending"), [tasks]);
 
   if (pendingTasks.length === 0) return null;
 
-  const handleApprove = (task: Task) => {
-    const result = approveTask(task.id, userEmail, task.submittedBy ?? "unknown@clstr.in");
-    if (result.success) {
+  const handleApprove = async (task: Task) => {
+    if (!user) return;
+    try {
+      await approveTask({
+        submissionId: task.submissionId!,
+        reviewerId: user.id,
+        submitterId: task.submittedBy ?? "",
+        points: task.points,
+      });
       broadcastEvent({ type: "TASK_APPROVED", taskId: task.id });
       showToast(`"${task.title}" approved! Points credited.`, "success");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Approval failed", "error");
     }
   };
 
-  const handleReject = (task: Task) => {
+  const handleReject = async (task: Task) => {
+    if (!user) return;
     const reason = rejectReason[task.id] ?? "";
-    const result = rejectTask(task.id, userEmail, task.submittedBy ?? "unknown@clstr.in", reason);
-    if (result.success) {
+    try {
+      await rejectTask({
+        submissionId: task.submissionId!,
+        reviewerId: user.id,
+        submitterId: task.submittedBy ?? "",
+        reason,
+      });
       broadcastEvent({ type: "TASK_REJECTED", taskId: task.id });
       showToast(`"${task.title}" rejected.`, "info");
       setRejecting(null);
       setRejectReason((prev) => { const n = { ...prev }; delete n[task.id]; return n; });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Rejection failed", "error");
     }
   };
 
@@ -451,19 +473,24 @@ function ReviewPanel({
                 <td className="py-3 px-3"><CategoryChip category={task.category} /></td>
                 <td className="py-3 px-3 text-sm font-bold text-[#CCFF00] tabular-nums">+{task.points}</td>
                 <td className="py-3 px-3">
-                  {task.proofDataUrl ? (
-                    task.proofDataUrl.startsWith("data:image") ? (
+                  {task.proofUrl ? (
+                    task.proofUrl.startsWith("data:image") ? (
                       <img
-                        src={task.proofDataUrl}
+                        src={task.proofUrl}
                         alt={`Proof for ${task.title}`}
                         className="w-12 h-12 rounded-lg object-cover border border-[#1A1A1A]"
                       />
-                    ) : (
+                    ) : task.proofUrl.startsWith("data:video") ? (
                       <video
-                        src={task.proofDataUrl}
+                        src={task.proofUrl}
                         className="w-12 h-12 rounded-lg object-cover border border-[#1A1A1A]"
                         aria-label={`Video proof for ${task.title}`}
                       />
+                    ) : (
+                      // Storage path — show a link icon
+                      <div className="w-12 h-12 rounded-lg border border-[#1A1A1A] flex items-center justify-center bg-[#CCFF00]/5" title="File uploaded">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#CCFF00" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      </div>
                     )
                   ) : (
                     <span className="text-xs text-[#555]">{t("tasks.noProof")}</span>
@@ -526,8 +553,8 @@ function ReviewPanel({
                   <span className="text-xs font-bold text-[#CCFF00]">+{task.points}</span>
                 </div>
               </div>
-              {task.proofDataUrl && task.proofDataUrl.startsWith("data:image") && (
-                <img src={task.proofDataUrl} alt="Proof" className="w-14 h-14 rounded-lg object-cover border border-[#1A1A1A] shrink-0" />
+              {task.proofUrl && task.proofUrl.startsWith("data:image") && (
+                <img src={task.proofUrl} alt="Proof" className="w-14 h-14 rounded-lg object-cover border border-[#1A1A1A] shrink-0" />
               )}
             </div>
             {task.notes && <p className="text-xs text-[#555]">{task.notes}</p>}
@@ -688,7 +715,8 @@ function VirtualTaskGrid({
 
 function PendingList({ tasks, prefersReduced }: { tasks: Task[]; prefersReduced: boolean | null }) {
   const { t } = useTranslation();
-  const pendingTasks = useMemo(() => tasks.filter((t) => t.status === "Pending Review"), [tasks]);
+  const pendingTasks = useMemo(() => tasks.filter((task) => task.status === "pending"), [tasks]);
+
   if (pendingTasks.length === 0) return null;
 
   return (
@@ -769,8 +797,11 @@ function PendingList({ tasks, prefersReduced }: { tasks: Task[]; prefersReduced:
 export default function ClstrTaskPanel() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { tasks, submitProof } = useTaskStore();
-  const { members } = useTeamStore();
+  const { tasks, submitProof: submitProofMutation, isSubmitting } = useTaskStore(
+    user?.id ?? "",
+    user?.teamId
+  );
+  const { members } = useTeamStore(user?.teamId ?? "", user?.id ?? "");
   const prefersReduced = useReducedMotion();
 
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -779,11 +810,11 @@ export default function ClstrTaskPanel() {
   const [toastKey, setToastKey] = useState(0);
 
   const isLead = user?.role === "LEAD" || user?.role === "SUPER_ADMIN";
-  const currentUserDomain = members.find((m: any) => m.email === user?.email)?.domain;
+  const currentUserDomain = undefined;
 
-  const openTasks = useMemo(() => tasks.filter((t) => t.status === "Open" || t.status === "Rejected"), [tasks]);
-  const pendingCount = useMemo(() => tasks.filter((t) => t.status === "Pending Review").length, [tasks]);
-  const verifiedCount = useMemo(() => tasks.filter((t) => t.status === "Verified").length, [tasks]);
+  const openTasks = useMemo(() => tasks.filter((t) => t.status === "open" || t.status === "rejected"), [tasks]);
+  const pendingCount = useMemo(() => tasks.filter((t) => t.status === "pending").length, [tasks]);
+  const verifiedCount = useMemo(() => tasks.filter((t) => t.status === "verified").length, [tasks]);
 
   const showToast = useCallback((message: string, type: "success" | "info" | "error") => {
     setToastKey((k) => k + 1);
@@ -801,19 +832,25 @@ export default function ClstrTaskPanel() {
   );
 
   const handleSubmitProof = useCallback(
-    (proofDataUrl: string, notes: string) => {
+    async (proofUrl: string, notes: string) => {
       if (!selectedTask || !user) return;
-      const leadEmail = isLead ? user.email : "lead@clstr.in";
-      const result = submitProof(selectedTask.id, proofDataUrl, notes, user.email, leadEmail);
-      if (result.success) {
+      try {
+        await submitProofMutation({
+          taskDefId: selectedTask.taskDefId,
+          userId: user.id,
+          currentStatus: selectedTask.status,
+          proofUrl,
+          notes,
+        });
         broadcastEvent({ type: "TASK_SUBMITTED", taskId: selectedTask.id });
         showToast(`"${selectedTask.title}" submitted for review`, "success");
         setSelectedTask(null);
-      } else if (result.errors) {
-        showToast(Object.values(result.errors)[0] ?? t("errors.genericError"), "error");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : t("errors.genericError");
+        showToast(msg, "error");
       }
     },
-    [selectedTask, user, isLead, submitProof, showToast, t]
+    [selectedTask, user, submitProofMutation, showToast, t]
   );
 
   // Phase 7.5 — BroadcastChannel real-time sync
@@ -830,24 +867,24 @@ export default function ClstrTaskPanel() {
   useRealtimeSync(handleRealtimeEvent);
 
   return (
-    <div className="w-full space-y-6">
+    <div className="w-full space-y-0">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-5 py-3 border border-[#222] bg-[#111]">
         <div className="flex flex-col gap-0.5">
-          <h2 className="text-lg sm:text-xl font-bold text-white">{t("tasks.boardTitle")}</h2>
-          <p className="text-xs text-[#666]">
+          <h2 className="text-sm font-bold tracking-tight text-[#F0F0F0]">{t("tasks.boardTitle")}</h2>
+          <p className="text-[10px] text-[#444] font-mono">
             {t("tasks.boardSubtitle", { open: openTasks.length, pending: pendingCount })}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="px-2.5 py-1 rounded-lg bg-[#CCFF00]/10 border border-[#CCFF00]/15 text-xs font-bold text-[#CCFF00] tabular-nums">
+        <div className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1 border border-[#C8FF00]/20 bg-[#C8FF00]/[0.05] px-2 py-0.5 text-[10px] font-black text-[#C8FF00] tabular-nums">
             {t("tasks.openCount", { count: openTasks.length })}
           </span>
-          <span className="px-2.5 py-1 rounded-lg bg-[#FF6A00]/10 border border-[#FF6A00]/15 text-xs font-bold text-[#FF6A00] tabular-nums">
+          <span className="flex items-center gap-1 border border-[#FF5500]/20 bg-[#FF5500]/[0.05] px-2 py-0.5 text-[10px] font-black text-[#FF5500] tabular-nums">
             {t("tasks.pendingCount", { count: pendingCount })}
           </span>
           {verifiedCount > 0 && (
-            <span className="px-2.5 py-1 rounded-lg bg-[#CCFF00]/5 border border-[#CCFF00]/10 text-xs font-bold text-[#CCFF00]/60 tabular-nums">
+            <span className="border border-[#C8FF00]/10 px-2 py-0.5 text-[10px] font-black text-[#444] tabular-nums">
               {verifiedCount} ✓
             </span>
           )}
@@ -862,9 +899,9 @@ export default function ClstrTaskPanel() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="rounded-2xl bg-[#0A0A0A]/40 backdrop-blur-xl border border-dashed border-[#1A1A1A]/50 p-8 text-center"
+            className="border border-dashed border-[#222] p-8 text-center bg-[#0A0A0A]"
           >
-            <p className="text-sm font-medium text-[#555]">{t("tasks.allDone")}</p>
+            <p className="text-[11px] font-mono text-[#3A3A3A] uppercase tracking-[0.1em]">{t("tasks.allDone")}</p>
           </motion.div>
         ) : (
           <motion.div key="grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>

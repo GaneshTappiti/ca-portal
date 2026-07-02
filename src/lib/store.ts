@@ -1,587 +1,342 @@
 /**
- * Phase 2 — Persistent State Store
+ * store.ts — Supabase-backed React Query hooks
  *
- * All application state is persisted in localStorage so it survives
- * page refresh. State is shared across components via custom hooks.
+ * Replaces the previous localStorage-based implementation.
+ * All data is now persisted in Supabase and synced across devices in real time.
  *
  * Architecture:
- *   - Each store domain (tasks, team, notifications) has its own key
- *   - A generic useLocalStorage hook handles serialisation/deserialisation
- *   - State transitions (task status machine) are enforced as pure functions
- *     that throw on invalid transitions — equivalent to a 400/422 from a
- *     real API route handler
+ *   - useQuery()  → read data from Supabase (with caching + loading states)
+ *   - useMutation() → write data to Supabase (with optimistic updates)
+ *   - Supabase Realtime → replaces BroadcastChannel for cross-device sync
  *
- * Phase 2.2 — Task state machine:
- *   Valid transitions:
- *     Open          → Pending Review  (MEMBER submits proof)
- *     Pending Review→ Verified        (LEAD approves)
- *     Pending Review→ Rejected        (LEAD rejects)
- *     Rejected      → Open            (auto-reset so member can retry)
- *   Invalid transitions throw so callers cannot accidentally corrupt status.
+ * The 90-day plan constants (TIER_TARGETS, WEEKLY_CUMULATIVE, etc.) remain
+ * in types.ts as read-only — they require no DB.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { taskSubmissionSchema, taskReviewSchema, parseErrors } from "./schemas";
-import { fetchLiveVerifiedUsers } from "./supabase";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { supabase } from "./supabaseClient";
+import { fetchLiveVerifiedUsers, fetchCollegeStats } from "./supabase";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+import {
+  fetchTasks,
+  fetchTeamSubmissions,
+  submitTaskProof,
+  approveTask,
+  rejectTask,
+} from "./queries/tasks";
+import { WEEKLY_CUMULATIVE } from "./types";
+import {
+  fetchTeamMembers,
+  fetchInvites,
+  generateInvite,
+  acceptInvite,
+  removeMember,
+} from "./queries/team";
+import {
+  fetchReels,
+  toggleReel,
+  fetchClubs,
+  addClub,
+  updateClub,
+  removeClub,
+  fetchReports,
+  submitReport,
+} from "./queries/plan";
+import {
+  fetchNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  subscribeToNotifications,
+  subscribeToTaskUpdates,
+} from "./queries/notifications";
 
-export type TaskCategory = "Clubs & Events" | "Placement & Career" | "Community" | "Growth & Outreach" | "CollabHub" | "General";
-export type TaskStatus = "Open" | "Pending Review" | "Verified" | "Rejected";
+// Re-export all types and constants so existing imports don't break
+export type {
+  AuthRole,
+  AuthUser,
+  TaskCategory,
+  TaskStatus,
+  TaskDefinition,
+  TaskSubmission,
+  Task,
+  TeamMember,
+  InviteCode,
+  Notification,
+  Tier,
+  ReelType,
+  ReelEntry,
+  ClubEntry,
+  WeeklyReport,
+  TaskAction,
+} from "./types";
 
-export interface Task {
-  id: string;
-  title: string;
-  points: number;
-  category: TaskCategory;
-  status: TaskStatus;
-  proofDataUrl?: string;
-  notes?: string;
-  submittedAt?: number;
-  reviewedAt?: number;
-  reviewedBy?: string;
-  rejectionReason?: string;
-  submittedBy?: string;
-}
+export {
+  applyTransition,
+  TIER_TARGETS,
+  WEEKLY_CUMULATIVE,
+  WEEK_NAMES,
+  WEEK_DATES,
+  WEEKLY_REELS,
+  WEEKLY_CLUB_FOCUS,
+  WEEKLY_MILESTONES,
+} from "./types";
 
-export interface TeamMember {
-  email: string;
-  name: string;
-  domain: string;
-  joinedAt: number;
-  role: "MEMBER";
-}
+// ─── Query keys ───────────────────────────────────────────────────────────────
 
-export interface InviteCode {
-  code: string;
-  domain: string;
-  createdAt: number;
-  usedBy?: string;
-}
-
-export interface Notification {
-  id: string;
-  recipientEmail: string;
-  type: "task_submitted" | "task_approved" | "task_rejected" | "invite_accepted";
-  message: string;
-  taskId?: string;
-  read: boolean;
-  createdAt: number;
-}
-
-// ─── 90-Day Plan Types ─────────────────────────────────────────────────────────
-
-export type Tier = 1 | 2 | 3 | 4;
-export type ReelType = "meme" | "campus_culture" | "student_conversation";
-
-export interface ReelEntry {
-  week: number;
-  type: ReelType;
-  title: string;
-  posted: boolean;
-  postedAt?: number;
-  url?: string;
-  views?: number;
-  shares?: number;
-}
-
-export interface ClubEntry {
-  id: string;
-  name: string;
-  domain: string;
-  onboarded: boolean;
-  onboardedAt?: number;
-  presidentName?: string;
-  eventCount: number;
-  lastPostAt?: number;
-  active: boolean;
-}
-
-export interface WeeklyReport {
-  week: number;
-  submitted: boolean;
-  submittedAt?: number;
-  signups: number;
-  cumulativeSignups: number;
-  reelsPosted: number;
-  clubsActive: number;
-  win: string;
-  blocker: string;
-}
-
-// ─── 90-Day Plan Constants ─────────────────────────────────────────────────────
-
-export const TIER_TARGETS: Record<Tier, string> = {
-  1: "15,000+ students — 5,000 target",
-  2: "8,000–15,000 students — 3,000 target",
-  3: "4,000–8,000 students — 2,000 target",
-  4: "Under 4,000 students — 1,000 target",
+export const QueryKeys = {
+  tasks:         (userId: string)   => ["tasks", userId] as const,
+  teamSubmissions:(teamId: string)  => ["team_submissions", teamId] as const,
+  teamMembers:   (teamId: string)   => ["team_members", teamId] as const,
+  invites:       (teamId: string)   => ["invites", teamId] as const,
+  notifications: (userId: string)   => ["notifications", userId] as const,
+  reels:         (userId: string)   => ["reels", userId] as const,
+  clubs:         (teamId: string)   => ["clubs", teamId] as const,
+  reports:       (userId: string)   => ["reports", userId] as const,
+  verifiedUsers: (campus: string)   => ["verified_users", campus] as const,
+  collegeStats:  (campus: string)   => ["college_stats", campus] as const,
 };
 
-export const WEEKLY_CUMULATIVE: Record<Tier, number[]> = {
-  1: [100, 250, 500, 800, 1150, 1550, 2000, 2500, 3050, 3650, 4200, 4700, 5000],
-  2: [60, 150, 300, 480, 690, 930, 1200, 1500, 1830, 2190, 2520, 2820, 3000],
-  3: [40, 100, 200, 320, 460, 620, 800, 1000, 1220, 1460, 1680, 1880, 2000],
-  4: [20, 50, 100, 160, 230, 310, 400, 500, 610, 730, 840, 940, 1000],
-};
+// ─── Mock ID guard ────────────────────────────────────────────────────────────
+//
+// Mock credentials in auth.tsx use IDs like "mock-lead", "mock-admin",
+// "mock-team" which are NOT valid UUIDs.  Sending these to Supabase REST API
+// causes 400 / 500 errors and floods the browser console.
+//
+// Any ID that doesn’t look like a proper UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+// is treated as a mock ID and all Supabase queries are disabled.
 
-export const WEEK_NAMES = [
-  "SETUP", "MAPPING", "FIRST ACTIVATION", "GROWTH SPRINT",
-  "ACTIVATION LOOPS", "MOMENTUM BUILD", "INDEPENDENCE DAY PUSH",
-  "SCALE WEEK", "DEEPEN ENGAGEMENT", "PEAK SPRINT", "PRE-EXAM PUSH",
-  "FINAL STRETCH", "MILESTONE CLOSE-OUT",
-];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const WEEK_DATES = [
-  "Jul 1 – Jul 7", "Jul 8 – Jul 14", "Jul 15 – Jul 21", "Jul 22 – Jul 28",
-  "Jul 29 – Aug 4", "Aug 5 – Aug 11", "Aug 12 – Aug 18", "Aug 19 – Aug 25",
-  "Aug 26 – Sep 1", "Sep 2 – Sep 8", "Sep 9 – Sep 15", "Sep 16 – Sep 22",
-  "Sep 23 – Sep 30",
-];
-
-export const WEEKLY_REELS: { week: number; meme: string; culture: string; conversation: string }[] = [
-  { week: 1, meme: 'Relatable fresher/reopening-week meme using trending audio', culture: '"POV: first day back on campus" walk-through', conversation: '"Meet your Campus Captain" intro reel' },
-  { week: 2, meme: '"Things only [college] students understand" inside joke', culture: 'Canteen/hostel/library POV reel', conversation: 'Vox-pop: "what do you wish your college app did?"' },
-  { week: 3, meme: 'Hostel/canteen/exam-fear meme, trending format', culture: '"Day in the life of a fresher at [college]" story reel', conversation: 'Club president posting first event live on Clstr' },
-  { week: 4, meme: 'Relatable academic-life meme tied to trending audio', culture: 'On-campus info session recap (energy, crowd, sign-ups)', conversation: 'First testimonial reel: student on why they use Clstr' },
-  { week: 5, meme: 'Mid-July academic grind meme', culture: 'Feed-content prompt reel for Campus Creators', conversation: 'Alumni/senior spotlight: "what I wish I knew as a fresher"' },
-  { week: 6, meme: 'Pre-Independence Day patriotic-but-funny meme', culture: 'Club-event RSVP push reel for Aug 15 event', conversation: '"3 things I\'d change about campus life" vox-pop' },
-  { week: 7, meme: 'Festival/holiday-week meme', culture: '"Campus voices" — students share a campus memory', conversation: 'Aug 15 campus celebration reel, collab-posted' },
-  { week: 8, meme: 'Fest-season meme, high shareability', culture: 'Fresher\'s day / cultural fest tie-in reel', conversation: 'Real testimonial from CollabHub or mentorship user' },
-  { week: 9, meme: 'Trending audio meme, campus-specific', culture: 'Alumni engagement reel via TPO/mentorship', conversation: 'CollabHub team-up in action: two students building something' },
-  { week: 10, meme: 'Highest-effort meme of the sprint — widest organic reach', culture: 'Ganesh Chaturthi / festival-season reel', conversation: 'Placement/internship reel if TPO listing has landed' },
-  { week: 11, meme: 'Mid-sem study-stress meme, high relatability', culture: 'Study-group / library culture reel', conversation: '"How Clstr helped me this semester" quick clips' },
-  { week: 12, meme: 'End-of-sprint high-energy meme', culture: 'Campus wins compilation reel (best moments)', conversation: 'Case-study style testimonial for main Clstr repost' },
-  { week: 13, meme: 'Thank-you/community meme closing the sprint', culture: 'Next-chapter teaser reel for Vizag community', conversation: '"3 months in numbers" recap reel for collab feature' },
-];
-
-export const WEEKLY_CLUB_FOCUS: { week: number; focus: string }[] = [
-  { week: 1, focus: "Map every active club + committee. Shortlist 3 to approach. No onboarding yet." },
-  { week: 2, focus: "Pitch 3-4 clubs directly. Get first verbal yes. Identify 10 high-influence students." },
-  { week: 3, focus: "Onboard 2 clubs LIVE — sit with each president and post their first event together." },
-  { week: 4, focus: "Onboard 3rd club. Push RSVP for club events — target 60%+ attendance." },
-  { week: 5, focus: "Onboard 4th club. Begin TPO/placement office conversation." },
-  { week: 6, focus: "5th club active. Check RSVP-to-attendance rate — fix drop-off if under 60%." },
-  { week: 7, focus: "6th club active. Use Aug 15 campus energy for joint activity." },
-  { week: 8, focus: "7th club active. Cross-promote fest content with clubs running fresher's day." },
-  { week: 9, focus: "8th club active — approaching full domain coverage. Confirm all clubs posted in last 7 days." },
-  { week: 10, focus: "Sustain all 8 clubs. Push one more high-visibility event with strong RSVP push." },
-  { week: 11, focus: "Sustain club activity through exam season — lighter cadence, keep feed alive." },
-  { week: 12, focus: "Confirm RSVP-to-attendance rate holding at 60%+ across all clubs." },
-  { week: 13, focus: "Lock in all active clubs for continuation next semester." },
-];
-
-export const WEEKLY_MILESTONES = [
-  { week: 3, label: "M1", name: "First Activation", pctTarget: 10, reward: "Merch (hoodie/cap)" },
-  { week: 7, label: "M2", name: "Independence Day Push", pctTarget: 40, reward: "₹500 voucher + shout-out" },
-  { week: 10, label: "M3", name: "Peak Sprint", pctTarget: 73, reward: "Signed Campus Leader Certificate" },
-  { week: 13, label: "M4", name: "Milestone Close-Out", pctTarget: 100, reward: "₹2,000 cash + letter + community gate unlocked" },
-  { week: 14, label: "M5", name: "Top Rank", pctTarget: 100, reward: "Fast-tracked core team / internship interview", isBonus: true },
-];
-
-// ─── Generic localStorage hook ────────────────────────────────────────────────
-
-function useLocalStorage<T>(key: string, initial: T): [T, (updater: T | ((prev: T) => T)) => void] {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as T) : initial;
-    } catch {
-      return initial;
-    }
-  });
-
-  const setStoredValue = useCallback(
-    (updater: T | ((prev: T) => T)) => {
-      setValue((prev) => {
-        const next = typeof updater === "function" ? (updater as (p: T) => T)(prev) : updater;
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          // Storage quota exceeded — degrade gracefully
-        }
-        return next;
-      });
-    },
-    [key]
-  );
-
-  return [value, setStoredValue];
-}
-
-// ─── Seed data ────────────────────────────────────────────────────────────────
-
-const SEED_TASKS: Task[] = [
-  { id: "t1", title: "Hold weekly team check-in", points: 50, category: "General", status: "Open" },
-  { id: "t2", title: "Submit Monday Report", points: 100, category: "General", status: "Open" },
-  { id: "t3", title: "Post first event for a club", points: 200, category: "Clubs & Events", status: "Open" },
-  { id: "t4", title: "Recruit Domain Leads", points: 300, category: "General", status: "Open" },
-  { id: "t5", title: "Onboard Placement Cell", points: 400, category: "Placement & Career", status: "Open" },
-  { id: "t6", title: "Host a community meetup", points: 350, category: "Community", status: "Open" },
-  { id: "t7", title: "100+ Signups Milestone", points: 500, category: "Growth & Outreach", status: "Open" },
-  { id: "t8", title: "Form a team on CollabHub", points: 150, category: "CollabHub", status: "Open" },
-];
-
-const SEED_TEAM: TeamMember[] = [
-  { email: "events@clstr.in", name: "Rahul S.", domain: "Clubs & Events", joinedAt: Date.now() - 86400000, role: "MEMBER" },
-  { email: "placement@clstr.in", name: "Priya M.", domain: "Placement & Career", joinedAt: Date.now() - 172800000, role: "MEMBER" },
-  { email: "community@clstr.in", name: "Aman D.", domain: "Community", joinedAt: Date.now() - 259200000, role: "MEMBER" },
-];
-
-const TASKS_KEY = "clstr_tasks";
-const TEAM_KEY = "clstr_team";
-const INVITES_KEY = "clstr_invites";
-const NOTIFICATIONS_KEY = "clstr_notifications";
-
-// ─── Task state machine ───────────────────────────────────────────────────────
-
-type TaskAction = "submit" | "approve" | "reject";
-
-const VALID_TRANSITIONS: Record<TaskStatus, Partial<Record<TaskAction, TaskStatus>>> = {
-  Open: { submit: "Pending Review" },
-  "Pending Review": { approve: "Verified", reject: "Rejected" },
-  Verified: {},
-  Rejected: { submit: "Pending Review" }, // member can retry
-};
-
-function applyTransition(task: Task, action: TaskAction): TaskStatus {
-  const next = VALID_TRANSITIONS[task.status][action];
-  if (!next) {
-    throw new Error(
-      `Invalid transition: cannot '${action}' a task with status '${task.status}'.`
-    );
-  }
-  return next;
-}
-
-// ─── Notification factory ─────────────────────────────────────────────────────
-
-function makeNotification(
-  recipientEmail: string,
-  type: Notification["type"],
-  message: string,
-  taskId?: string
-): Notification {
-  return {
-    id: `n-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    recipientEmail,
-    type,
-    message,
-    taskId,
-    read: false,
-    createdAt: Date.now(),
-  };
+/** Returns true when the id is a dev-only mock (not a real Supabase UUID). */
+export function isMockId(id: string | null | undefined): boolean {
+  if (!id) return true;
+  return !UUID_RE.test(id);
 }
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
 
-export function useTaskStore() {
-  const [tasks, setTasks] = useLocalStorage<Task[]>(TASKS_KEY, SEED_TASKS);
-  const [notifications, setNotifications] = useLocalStorage<Notification[]>(NOTIFICATIONS_KEY, []);
+export function useTaskStore(userId: string, teamId?: string) {
+  const qc = useQueryClient();
+  const isReal = !isMockId(userId);
 
-  const addNotification = useCallback(
-    (n: Notification) => setNotifications((prev) => [n, ...prev]),
-    [setNotifications]
-  );
+  const tasksQuery = useQuery({
+    queryKey: QueryKeys.tasks(userId),
+    queryFn:  () => fetchTasks(userId),
+    enabled:  !!userId && isReal,
+    staleTime: 30_000,
+  });
 
-  /** Phase 2.2 — Submit proof (MEMBER action) */
-  const submitProof = useCallback(
-    (
-      taskId: string,
-      proofDataUrl: string,
-      notes: string,
-      submitterEmail: string,
-      leadEmail: string
-    ): { success: boolean; errors?: Record<string, string> } => {
-      // Phase 1.5 — validate at the "API boundary"
-      const result = taskSubmissionSchema.safeParse({ taskId, proofDataUrl, notes });
-      if (!result.success) {
-        return { success: false, errors: parseErrors(result) };
-      }
+  const teamSubsQuery = useQuery({
+    queryKey: QueryKeys.teamSubmissions(teamId ?? ""),
+    queryFn:  () => fetchTeamSubmissions(teamId!),
+    enabled:  !!teamId && !isMockId(teamId),
+    staleTime: 15_000,
+  });
 
-      let taskTitle = "";
-      setTasks((prev) =>
-        prev.map((t) => {
-          if (t.id !== taskId) return t;
-          const nextStatus = applyTransition(t, "submit");
-          taskTitle = t.title;
-          return {
-            ...t,
-            status: nextStatus,
-            proofDataUrl,
-            notes,
-            submittedAt: Date.now(),
-            submittedBy: submitterEmail,
-          };
-        })
-      );
+  // Realtime: only subscribe for real UUIDs
+  useEffect(() => {
+    if (!teamId || isMockId(teamId)) return;
+    const channel = subscribeToTaskUpdates(teamId, () => {
+      qc.invalidateQueries({ queryKey: QueryKeys.tasks(userId) });
+      qc.invalidateQueries({ queryKey: QueryKeys.teamSubmissions(teamId) });
+    });
+    return () => { supabase.removeChannel(channel); };
+  }, [teamId, userId, qc]);
 
-      // Notify LEAD that a new submission is pending
-      addNotification(
-        makeNotification(
-          leadEmail,
-          "task_submitted",
-          `"${taskTitle}" submitted for review by ${submitterEmail}.`,
-          taskId
-        )
-      );
-
-      return { success: true };
+  const submitProofMutation = useMutation({
+    mutationFn: submitTaskProof,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QueryKeys.tasks(userId) });
     },
-    [setTasks, addNotification]
-  );
+  });
 
-  /** Phase 2.5 — Approve task (LEAD action) */
-  const approveTask = useCallback(
-    (
-      taskId: string,
-      reviewerEmail: string,
-      submitterEmail: string
-    ): { success: boolean; errors?: Record<string, string> } => {
-      const result = taskReviewSchema.safeParse({ taskId, action: "approve" });
-      if (!result.success) return { success: false, errors: parseErrors(result) };
-
-      let taskTitle = "";
-      setTasks((prev) =>
-        prev.map((t) => {
-          if (t.id !== taskId) return t;
-          const nextStatus = applyTransition(t, "approve");
-          taskTitle = t.title;
-          return { ...t, status: nextStatus, reviewedAt: Date.now(), reviewedBy: reviewerEmail };
-        })
-      );
-
-      // Notify MEMBER that their task was approved
-      addNotification(
-        makeNotification(
-          submitterEmail,
-          "task_approved",
-          `"${taskTitle}" was approved! Points have been credited.`,
-          taskId
-        )
-      );
-
-      return { success: true };
+  const approveTaskMutation = useMutation({
+    mutationFn: approveTask,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QueryKeys.tasks(userId) });
+      if (teamId) qc.invalidateQueries({ queryKey: QueryKeys.teamSubmissions(teamId) });
     },
-    [setTasks, addNotification]
-  );
+  });
 
-  /** Phase 2.5 — Reject task (LEAD action) */
-  const rejectTask = useCallback(
-    (
-      taskId: string,
-      reviewerEmail: string,
-      submitterEmail: string,
-      reason?: string
-    ): { success: boolean; errors?: Record<string, string> } => {
-      const result = taskReviewSchema.safeParse({ taskId, action: "reject", reason });
-      if (!result.success) return { success: false, errors: parseErrors(result) };
-
-      let taskTitle = "";
-      setTasks((prev) =>
-        prev.map((t) => {
-          if (t.id !== taskId) return t;
-          const nextStatus = applyTransition(t, "reject");
-          taskTitle = t.title;
-          return {
-            ...t,
-            status: nextStatus,
-            reviewedAt: Date.now(),
-            reviewedBy: reviewerEmail,
-            rejectionReason: reason,
-          };
-        })
-      );
-
-      addNotification(
-        makeNotification(
-          submitterEmail,
-          "task_rejected",
-          `"${taskTitle}" was rejected${reason ? `: ${reason}` : ""}. You can resubmit.`,
-          taskId
-        )
-      );
-
-      return { success: true };
+  const rejectTaskMutation = useMutation({
+    mutationFn: rejectTask,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QueryKeys.tasks(userId) });
+      if (teamId) qc.invalidateQueries({ queryKey: QueryKeys.teamSubmissions(teamId) });
     },
-    [setTasks, addNotification]
-  );
+  });
 
-  return { tasks, setTasks, submitProof, approveTask, rejectTask, notifications };
+  return {
+    tasks: tasksQuery.data ?? [],
+    teamSubmissions: teamSubsQuery.data ?? [],
+    isLoading: tasksQuery.isLoading,
+    isError: tasksQuery.isError,
+    error: tasksQuery.error,
+    submitProof: submitProofMutation.mutateAsync,
+    approveTask: approveTaskMutation.mutateAsync,
+    rejectTask: rejectTaskMutation.mutateAsync,
+    isSubmitting: submitProofMutation.isPending,
+    isReviewing: approveTaskMutation.isPending || rejectTaskMutation.isPending,
+  };
 }
 
 // ─── Notification Store ───────────────────────────────────────────────────────
 
-export function useNotificationStore(userEmail: string) {
-  const [allNotifications, setAllNotifications] = useLocalStorage<Notification[]>(
-    NOTIFICATIONS_KEY,
-    []
-  );
+export function useNotificationStore(userId: string) {
+  const qc = useQueryClient();
 
-  const myNotifications = useMemo(
-    () =>
-      allNotifications
-        .filter((n) => n.recipientEmail === userEmail)
-        .sort((a, b) => b.createdAt - a.createdAt),
-    [allNotifications, userEmail]
-  );
+  const query = useQuery({
+    queryKey: QueryKeys.notifications(userId),
+    queryFn:  () => fetchNotifications(userId),
+    enabled:  !!userId && !isMockId(userId),
+    staleTime: 10_000,
+  });
 
+  // Realtime: only subscribe for real UUIDs
+  useEffect(() => {
+    if (!userId || isMockId(userId)) return;
+    const channel = subscribeToNotifications(userId, (notif) => {
+      qc.setQueryData(
+        QueryKeys.notifications(userId),
+        (prev: typeof query.data) => [notif, ...(prev ?? [])]
+      );
+    });
+    return () => { supabase.removeChannel(channel); };
+  }, [userId, qc]);
+
+  const markReadMutation = useMutation({
+    mutationFn: markNotificationRead,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.notifications(userId) }),
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => markAllNotificationsRead(userId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.notifications(userId) }),
+  });
+
+  const notifications = query.data ?? [];
   const unreadCount = useMemo(
-    () => myNotifications.filter((n) => !n.read).length,
-    [myNotifications]
+    () => notifications.filter((n) => !n.read).length,
+    [notifications]
   );
 
-  const markRead = useCallback(
-    (id: string) =>
-      setAllNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-      ),
-    [setAllNotifications]
-  );
-
-  const markAllRead = useCallback(
-    () =>
-      setAllNotifications((prev) =>
-        prev.map((n) => (n.recipientEmail === userEmail ? { ...n, read: true } : n))
-      ),
-    [setAllNotifications, userEmail]
-  );
-
-  return { notifications: myNotifications, unreadCount, markRead, markAllRead };
+  return {
+    notifications,
+    unreadCount,
+    isLoading: query.isLoading,
+    markRead: markReadMutation.mutateAsync,
+    markAllRead: markAllReadMutation.mutateAsync,
+  };
 }
 
 // ─── Team Store ───────────────────────────────────────────────────────────────
 
-export function useTeamStore() {
-  const [members, setMembers] = useLocalStorage<TeamMember[]>(TEAM_KEY, SEED_TEAM);
-  const [invites, setInvites] = useLocalStorage<InviteCode[]>(INVITES_KEY, []);
-  const [allNotifications, setAllNotifications] = useLocalStorage<Notification[]>(NOTIFICATIONS_KEY, []);
+export function useTeamStore(teamId: string, leadId: string) {
+  const qc = useQueryClient();
+  const isReal = !isMockId(teamId);
 
-  /** Generate a new invite code */
-  const generateInvite = useCallback(
-    (leadEmail: string, domain: string): string => {
-      const code = `CLSTR-${Math.random().toString(36).toUpperCase().slice(2, 8)}`;
-      const invite: InviteCode = { code, domain, createdAt: Date.now() };
-      setInvites((prev) => [invite, ...prev]);
-      return code;
+  const membersQuery = useQuery({
+    queryKey: QueryKeys.teamMembers(teamId),
+    queryFn:  () => fetchTeamMembers(teamId),
+    enabled:  !!teamId && isReal,
+    staleTime: 30_000,
+  });
+
+  const invitesQuery = useQuery({
+    queryKey: QueryKeys.invites(teamId),
+    queryFn:  () => fetchInvites(teamId),
+    enabled:  !!teamId && isReal,
+    staleTime: 30_000,
+  });
+
+  const generateInviteMutation = useMutation({
+    mutationFn: (params: { domainRole?: string }) =>
+      generateInvite({ teamId, createdBy: leadId, ...params }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.invites(teamId) }),
+  });
+
+  const acceptInviteMutation = useMutation({
+    mutationFn: (params: { code: string; userId: string }) => acceptInvite(params),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QueryKeys.teamMembers(teamId) });
     },
-    [setInvites]
-  );
+  });
 
-  /** Accept an invite code and join the team */
-  const acceptInvite = useCallback(
-    (
-      code: string,
-      joinerEmail: string,
-      joinerName: string,
-      leadEmail: string
-    ): { success: boolean; error?: string } => {
-      const invite = invites.find(
-        (i) => i.code === code.toUpperCase() && !i.usedBy
-      );
-      if (!invite) {
-        return { success: false, error: "Invalid or already-used invite code." };
-      }
+  const removeMemberMutation = useMutation({
+    mutationFn: removeMember,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.teamMembers(teamId) }),
+  });
 
-      // Mark invite as used
-      setInvites((prev) =>
-        prev.map((i) => (i.code === code.toUpperCase() ? { ...i, usedBy: joinerEmail } : i))
-      );
-
-      // Add to team
-      const member: TeamMember = {
-        email: joinerEmail,
-        name: joinerName,
-        domain: invite.domain,
-        joinedAt: Date.now(),
-        role: "MEMBER",
-      };
-      setMembers((prev) => {
-        if (prev.some((m) => m.email === joinerEmail)) return prev;
-        return [...prev, member];
-      });
-
-      // Notify LEAD
-      setAllNotifications((prev) => [
-        makeNotification(
-          leadEmail,
-          "invite_accepted",
-          `${joinerName} (${joinerEmail}) joined your team as ${invite.domain} Lead.`
-        ),
-        ...prev,
-      ]);
-
-      return { success: true };
-    },
-    [invites, setInvites, setMembers, setAllNotifications]
-  );
-
-  /** Remove a member from the team */
-  const removeMember = useCallback(
-    (email: string) =>
-      setMembers((prev) => prev.filter((m) => m.email !== email)),
-    [setMembers]
-  );
-
-  return { members, invites, generateInvite, acceptInvite, removeMember };
-}
-
-// ─── Metrics (Guidebook KPIs) ──────────────────────────────────────────────────
-
-export function useMetrics(userEmail?: string, campusName: string = "raghuinstitute") {
-  const [tasks] = useLocalStorage<Task[]>(TASKS_KEY, SEED_TASKS);
-  
-  // Real async metrics
-  const [verifiedUsers, setVerifiedUsers] = useState<number>(480);
-  
-  useEffect(() => {
-    fetchLiveVerifiedUsers(campusName).then(count => {
-      setVerifiedUsers(count);
-    });
-  }, [campusName]);
-
-  // These would typically come from an external Supabase API or database
-  // Setting placeholders based on guidebook targets for the demo.
-  const activeClubs = 2;
-  const eventsPosted = 5;
-
-  return useMemo(() => {
-    const verifiedTasks = tasks.filter(
-      (t) => t.status === "Verified" && (!userEmail || t.submittedBy === userEmail)
-    );
-    const totalPoints = verifiedTasks.reduce((sum, t) => sum + t.points, 0);
-    const pendingCount = tasks.filter((t) => t.status === "Pending Review").length;
-    const verifiedCount = tasks.filter((t) => t.status === "Verified").length;
-
-    return {
-      totalPoints,
-      verifiedUsers,
-      activeClubs,
-      eventsPosted,
-      pendingCount,
-      verifiedCount,
-      taskBreakdown: {
-        open: tasks.filter((t) => t.status === "Open").length,
-        pendingReview: pendingCount,
-        verified: verifiedCount,
-        rejected: tasks.filter((t) => t.status === "Rejected").length,
-      },
-    };
-  }, [tasks, userEmail]);
+  return {
+    members: membersQuery.data ?? [],
+    invites: invitesQuery.data ?? [],
+    isLoading: membersQuery.isLoading,
+    generateInvite: generateInviteMutation.mutateAsync,
+    acceptInvite: acceptInviteMutation.mutateAsync,
+    removeMember: removeMemberMutation.mutateAsync,
+    isGenerating: generateInviteMutation.isPending,
+  };
 }
 
 // ─── 90-Day Plan Store ─────────────────────────────────────────────────────────
 
-const REELS_KEY = "clstr_reels";
-const CLUBS_KEY = "clstr_clubs";
-const REPORTS_KEY = "clstr_reports";
-const TIER_KEY = "clstr_tier";
+export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
+  const qc = useQueryClient();
+  const isRealUser = !isMockId(userId);
+  const isRealTeam = !isMockId(teamId);
 
-export function usePlanStore() {
-  const [tier] = useLocalStorage<Tier>(TIER_KEY, 1);
-  const [reels, setReels] = useLocalStorage<ReelEntry[]>(REELS_KEY, []);
-  const [clubs, setClubs] = useLocalStorage<ClubEntry[]>(CLUBS_KEY, []);
-  const [reports, setReports] = useLocalStorage<WeeklyReport[]>(REPORTS_KEY, []);
+  const reelsQuery = useQuery({
+    queryKey: QueryKeys.reels(userId),
+    queryFn:  () => fetchReels(userId),
+    enabled:  !!userId && isRealUser,
+    staleTime: 60_000,
+  });
+
+  const clubsQuery = useQuery({
+    queryKey: QueryKeys.clubs(teamId),
+    queryFn:  () => fetchClubs(teamId),
+    enabled:  !!teamId && isRealTeam,
+    staleTime: 60_000,
+  });
+
+  const reportsQuery = useQuery({
+    queryKey: QueryKeys.reports(userId),
+    queryFn:  () => fetchReports(userId),
+    enabled:  !!userId && isRealUser,
+    staleTime: 60_000,
+  });
+
+  const toggleReelMutation = useMutation({
+    mutationFn: toggleReel,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.reels(userId) }),
+  });
+
+  const addClubMutation = useMutation({
+    mutationFn: addClub,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.clubs(teamId) }),
+  });
+
+  const updateClubMutation = useMutation({
+    mutationFn: ({ id, ...data }: Parameters<typeof updateClub>[1] & { id: string }) =>
+      updateClub(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.clubs(teamId) }),
+  });
+
+  const removeClubMutation = useMutation({
+    mutationFn: removeClub,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.clubs(teamId) }),
+  });
+
+  const submitReportMutation = useMutation({
+    mutationFn: submitReport,
+    onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.reports(userId) }),
+  });
 
   const currentWeek = useMemo(() => {
     const now = Date.now();
@@ -593,69 +348,151 @@ export function usePlanStore() {
     return Math.min(Math.max(wk, 1), 13);
   }, []);
 
-  const weeklyTargets = useMemo(() => WEEKLY_CUMULATIVE[tier], [tier]);
+  // WEEKLY_CUMULATIVE imported statically at top of file
+  const weeklyTargets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
   const currentTarget = weeklyTargets[currentWeek - 1] ?? 0;
 
-  const toggleReelPosted = useCallback((week: number, type: ReelType, data?: Partial<ReelEntry>) => {
-    setReels((prev) => {
-      const existing = prev.findIndex((r) => r.week === week && r.type === type);
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = { ...updated[existing], ...data, posted: !updated[existing].posted };
-        return updated;
-      }
-      return [...prev, { week, type, title: "", posted: true, ...data }];
-    });
-  }, [setReels]);
-
-  const addClub = useCallback((club: ClubEntry) => {
-    setClubs((prev) => [...prev, club]);
-  }, [setClubs]);
-
-  const updateClub = useCallback((id: string, data: Partial<ClubEntry>) => {
-    setClubs((prev) => prev.map((c) => c.id === id ? { ...c, ...data } : c));
-  }, [setClubs]);
-
-  const removeClub = useCallback((id: string) => {
-    setClubs((prev) => prev.filter((c) => c.id !== id));
-  }, [setClubs]);
-
-  const submitReport = useCallback((week: number, data: Omit<WeeklyReport, "week" | "submitted" | "submittedAt">) => {
-    setReports((prev) => {
-      const existing = prev.findIndex((r) => r.week === week);
-      const report: WeeklyReport = { ...data, week, submitted: true, submittedAt: Date.now() };
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = report;
-        return updated;
-      }
-      return [...prev, report];
-    });
-  }, [setReports]);
-
-  const getWeekReels = useCallback((week: number) => {
-    return reels.filter((r) => r.week === week);
-  }, [reels]);
-
-  const getWeekReport = useCallback((week: number) => {
-    return reports.find((r) => r.week === week);
-  }, [reports]);
-
+  const clubs = clubsQuery.data ?? [];
   const activeClubsCount = useMemo(() => clubs.filter((c) => c.active).length, [clubs]);
-  const totalOnboardedClubs = clubs.length;
+
+  const getWeekReels = useCallback(
+    (week: number) => (reelsQuery.data ?? []).filter((r) => r.week === week),
+    [reelsQuery.data]
+  );
+
+  const getWeekReport = useCallback(
+    (week: number) => (reportsQuery.data ?? []).find((r) => r.week === week),
+    [reportsQuery.data]
+  );
 
   return {
-    tier, currentWeek, weeklyTargets, currentTarget,
-    reels, clubs, reports,
-    toggleReelPosted, addClub, updateClub, removeClub,
-    submitReport, getWeekReels, getWeekReport,
-    activeClubsCount, totalOnboardedClubs,
+    tier,
+    currentWeek,
+    weeklyTargets,
+    currentTarget,
+    reels: reelsQuery.data ?? [],
+    clubs,
+    reports: reportsQuery.data ?? [],
+    isLoading: reelsQuery.isLoading || clubsQuery.isLoading || reportsQuery.isLoading,
+    toggleReelPosted: toggleReelMutation.mutateAsync,
+    addClub: addClubMutation.mutateAsync,
+    updateClub: updateClubMutation.mutateAsync,
+    removeClub: removeClubMutation.mutateAsync,
+    submitReport: submitReportMutation.mutateAsync,
+    getWeekReels,
+    getWeekReport,
+    activeClubsCount,
+    totalOnboardedClubs: clubs.length,
   };
 }
 
-// ─── BroadcastChannel real-time sync (Phase 7.5) ──────────────────────────────
+// ─── Metrics ──────────────────────────────────────────────────────────────────
 
-const REALTIME_CHANNEL = "clstr_realtime";
+/**
+ * useMetrics — live campus stats from admin_college_stats_v2 (main Clstr DB)
+ * + task-based growth points from the CA portal DB.
+ *
+ * Data sources:
+ *   - fetchCollegeStats(campus) → admin_college_stats_v2 via secondary Supabase client
+ *     Fields used: total_users, active_users_7d, clubs_count, events_count,
+ *                  student_count, alumni_count, faculty_count, stats_refreshed_at
+ *   - fetchTasks(userId)        → task_submissions in this portal's DB
+ *     Fields used: points_awarded (sum for growth points), status counts
+ *
+ * campus should match canonical_domain in admin_college_stats_v2.
+ * Example: user.campus = "clstr.raghuinstitute" → strips to "raghuinstitute"
+ */
+export function useMetrics(userId?: string, campus: string = "raghuinstitute") {
+  // Strip the "clstr." prefix if present so it matches canonical_domain
+  const canonicalDomain = campus.replace(/^clstr\./, "");
+
+  // Task-based metrics (this portal's DB)
+  const tasksQuery = useQuery({
+    queryKey: QueryKeys.tasks(userId ?? ""),
+    queryFn:  () => fetchTasks(userId!),
+    enabled:  !!userId,
+    staleTime: 30_000,
+  });
+
+  // Campus stats from the main Clstr DB (admin_college_stats_v2)
+  const collegeStatsQuery = useQuery({
+    queryKey: QueryKeys.collegeStats(canonicalDomain),
+    queryFn:  () => fetchCollegeStats(canonicalDomain),
+    staleTime: 5 * 60_000,   // refresh every 5 minutes
+    placeholderData: null,
+    retry: 2,
+  });
+
+  const tasks = tasksQuery.data ?? [];
+  const stats = collegeStatsQuery.data;
+
+  return useMemo(() => {
+    // Growth points: sum of points_awarded on verified submissions in this portal
+    const verifiedTasks  = tasks.filter(t => t.status === "verified");
+    const totalPoints    = verifiedTasks.reduce((sum, t) => sum + (t.pointsAwarded ?? 0), 0);
+    const pendingCount   = tasks.filter(t => t.status === "pending").length;
+    const verifiedCount  = verifiedTasks.length;
+
+    // Live campus stats (from main Clstr DB)
+    const isLive = !collegeStatsQuery.isPlaceholderData && !!stats;
+
+    return {
+      // ── From admin_college_stats_v2 ──
+      /** Total registered users on this campus (the main "Verified Users" metric) */
+      verifiedUsers:     stats?.totalUsers     ?? 0,
+      /** Users active in the last 7 days */
+      activeUsers7d:     stats?.activeUsers7d  ?? 0,
+      /** Students specifically */
+      studentCount:      stats?.studentCount   ?? 0,
+      /** Alumni on this campus */
+      alumniCount:       stats?.alumniCount    ?? 0,
+      /** Faculty on this campus */
+      facultyCount:      stats?.facultyCount   ?? 0,
+      /** Clubs registered on Clstr for this campus (from main DB) */
+      liveClubsCount:    stats?.clubsCount     ?? 0,
+      /** Events posted on this campus */
+      eventsCount:       stats?.eventsCount    ?? 0,
+      /** Posts on this campus */
+      postsCount:        stats?.postsCount     ?? 0,
+      /** College name from main DB */
+      collegeName:       stats?.name           ?? "",
+      /** When stats were last refreshed in the main DB */
+      statsRefreshedAt:  stats?.statsRefreshedAt ?? null,
+      /** Whether the data is live (secondary DB connected) or showing zeros */
+      isLive,
+      isVerifiedUsersLive: isLive,
+      verifiedUsersLastUpdated: collegeStatsQuery.dataUpdatedAt,
+
+      // ── From task_submissions (this portal's DB) ──
+      /** Sum of points_awarded across all verified task submissions */
+      totalPoints,
+      pendingCount,
+      verifiedCount,
+      taskBreakdown: {
+        open:          tasks.filter(t => t.status === "open").length,
+        pendingReview: pendingCount,
+        verified:      verifiedCount,
+        rejected:      tasks.filter(t => t.status === "rejected").length,
+      },
+
+      // Loading states
+      isLoadingStats: collegeStatsQuery.isLoading,
+      isLoadingTasks: tasksQuery.isLoading,
+    };
+  }, [
+    tasks, userId,
+    stats,
+    collegeStatsQuery.isPlaceholderData,
+    collegeStatsQuery.dataUpdatedAt,
+    collegeStatsQuery.isLoading,
+    tasksQuery.isLoading,
+  ]);
+}
+
+// ─── Legacy: BroadcastChannel removed — replaced by Supabase Realtime ─────────
+// The subscriptions are now set up inside useTaskStore and useNotificationStore.
+// These stubs exist only so any import that used broadcastEvent/useRealtimeSync
+// doesn't crash — they are no-ops.
 
 export type RealtimeEvent =
   | { type: "TASK_SUBMITTED"; taskId: string }
@@ -663,24 +500,12 @@ export type RealtimeEvent =
   | { type: "TASK_REJECTED"; taskId: string }
   | { type: "MEMBER_JOINED"; email: string };
 
-let _channel: BroadcastChannel | null = null;
-
-function getChannel(): BroadcastChannel | null {
-  if (typeof BroadcastChannel === "undefined") return null;
-  if (!_channel) _channel = new BroadcastChannel(REALTIME_CHANNEL);
-  return _channel;
+/** @deprecated Replaced by Supabase Realtime. This is a no-op. */
+export function broadcastEvent(_event: RealtimeEvent): void {
+  // No-op: Supabase Realtime handles cross-device sync
 }
 
-export function broadcastEvent(event: RealtimeEvent): void {
-  getChannel()?.postMessage(event);
-}
-
-export function useRealtimeSync(onEvent: (event: RealtimeEvent) => void): void {
-  useEffect(() => {
-    const ch = getChannel();
-    if (!ch) return;
-    const handler = (e: MessageEvent) => onEvent(e.data as RealtimeEvent);
-    ch.addEventListener("message", handler);
-    return () => ch.removeEventListener("message", handler);
-  }, [onEvent]);
+/** @deprecated Replaced by Supabase Realtime subscriptions in useTaskStore. */
+export function useRealtimeSync(_onEvent: (event: RealtimeEvent) => void): void {
+  // No-op: Supabase Realtime handles cross-device sync
 }

@@ -8,7 +8,19 @@ import { useState, useRef, useEffect, useCallback, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useNotificationStore } from "../lib/store";
+import { useAuth } from "../lib/auth";
 import type { Notification } from "../lib/store";
+
+// Derive a display message from notification type + payload
+function getNotifMessage(notif: Notification): string {
+  switch (notif.type) {
+    case "task_submitted": return "A team member submitted a task for review.";
+    case "task_approved": return `Your task was approved! +${(notif.payload as any)?.points ?? 0} points.`;
+    case "task_rejected": return `Your task was rejected. Reason: ${(notif.payload as any)?.reason ?? "See notes."}` ;
+    case "invite_accepted": return "A new member joined your team via invite.";
+    default: return "New notification";
+  }
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -108,7 +120,7 @@ const NotifRow = memo(function NotifRow({
           ? "opacity-50 hover:opacity-70"
           : "bg-white/[0.02] hover:bg-white/[0.04]"
       }`}
-      aria-label={`${notif.read ? "" : "Unread: "}${notif.message}`}
+      aria-label={`${notif.read ? "" : "Unread: "}${getNotifMessage(notif)}`}
     >
       <div
         className="mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center shrink-0"
@@ -117,10 +129,10 @@ const NotifRow = memo(function NotifRow({
         <NotifIcon type={notif.type} />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-xs text-white leading-relaxed">{notif.message}</p>
+        <p className="text-xs text-white leading-relaxed">{getNotifMessage(notif)}</p>
         <p className="text-[10px] text-[#555] mt-0.5">
           {(() => {
-            const diffMin = Math.floor((Date.now() - notif.createdAt) / 60000);
+            const diffMin = Math.floor((Date.now() - new Date(notif.createdAt).getTime()) / 60000);
             if (diffMin < 1) return t("notifications.justNow");
             if (diffMin < 60) return t("notifications.minutesAgo", { count: diffMin });
             return t("notifications.hoursAgo", { count: Math.floor(diffMin / 60) });
@@ -142,7 +154,8 @@ interface NotificationCenterProps {
 
 export default function NotificationCenter({ userEmail }: NotificationCenterProps) {
   const { t } = useTranslation();
-  const { notifications, unreadCount, markRead, markAllRead } = useNotificationStore(userEmail);
+  const { user } = useAuth();
+  const { notifications, unreadCount, markRead, markAllRead } = useNotificationStore(user?.id ?? userEmail);
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -221,7 +234,7 @@ export default function NotificationCenter({ userEmail }: NotificationCenterProp
               <h2 className="text-sm font-bold text-white">{t("notifications.title")}</h2>
               {unreadCount > 0 && (
                 <button
-                  onClick={markAllRead}
+                  onClick={() => markAllRead()}
                   className="text-[10px] font-semibold text-[#CCFF00]/70 hover:text-[#CCFF00] transition-colors"
                 >
                   {t("notifications.markAllRead")}

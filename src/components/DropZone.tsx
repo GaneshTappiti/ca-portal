@@ -1,26 +1,37 @@
 /**
- * Phase 2.3 — Real Proof Upload (file → base64 data URL)
- * Phase 7.3 — Drag & Drop File Upload with progress
- * Phase 4.4 — Accessible: click-to-browse fallback, aria labels
+ * DropZone.tsx — Supabase Storage upload (replaces base64)
  *
- * Accepts image/* and video/* files up to 10 MB.
- * Reads the file as a base64 data URL (equivalent of storing a presigned-URL
- * upload result) and calls onFileAccepted with the result.
- *
- * Progress is real (reads from FileReader progressEvent).
+ * Phase 3:
+ *   - Uploads files to Supabase Storage bucket "task-proofs"
+ *   - Upload path: {user_id}/{task_def_id}/{filename}
+ *   - onFileAccepted receives the storage PATH (not base64 dataUrl)
+ *   - Progress wired to XMLHttpRequest upload progress
+ *   - All UI/UX preserved: drag-drop, click-to-browse, 10MB limit, progress bar
+ *   - Server-side file type/size validation enforced by bucket policies
  */
 
 import { useState, useRef, useCallback, useId } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
+import { supabase } from "../lib/supabaseClient";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm", "video/quicktime"];
+const ACCEPTED_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+];
 
 export interface DropZoneProps {
-  onFileAccepted: (dataUrl: string, fileName: string) => void;
+  onFileAccepted: (storagePath: string, fileName: string) => void;
   onError: (message: string) => void;
   currentFileName?: string;
+  userId: string;
+  taskDefId: string;
 }
 
 function UploadIcon({ dragging }: { dragging: boolean }) {
@@ -52,19 +63,77 @@ function CheckIcon() {
   );
 }
 
-export default function DropZone({ onFileAccepted, onError, currentFileName }: DropZoneProps) {
+export default function DropZone({
+  onFileAccepted,
+  onError,
+  currentFileName,
+  userId,
+  taskDefId,
+}: DropZoneProps) {
   const { t } = useTranslation();
   const prefersReduced = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [fileName, setFileName] = useState<string | null>(currentFileName ?? null);
+  const [uploading, setUploading] = useState(false);
   const dropZoneId = useId();
   const statusId = useId();
 
+  const uploadToSupabase = useCallback(
+    async (file: File): Promise<string> => {
+      // Sanitise filename to be storage-safe
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `${userId}/${taskDefId}/${Date.now()}_${safeName}`;
+
+      return new Promise<string>((resolve, reject) => {
+        // Use XMLHttpRequest for upload progress events
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            setProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        });
+
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setProgress(100);
+            setTimeout(() => setProgress(null), 600);
+            resolve(path);
+          } else {
+            reject(new Error(`Upload failed: ${xhr.statusText}`));
+          }
+        });
+
+        xhr.addEventListener("error", () => {
+          reject(new Error("Network error during upload."));
+        });
+
+        // Get the upload URL from Supabase
+        supabase.storage
+          .from("task-proofs")
+          .createSignedUploadUrl(path)
+          .then(({ data, error }) => {
+            if (error || !data) {
+              reject(error ?? new Error("Could not get upload URL."));
+              return;
+            }
+            xhr.open("PUT", data.signedUrl);
+            xhr.setRequestHeader("Content-Type", file.type);
+
+            const formData = new FormData();
+            formData.append("file", file);
+            xhr.send(file);
+          });
+      });
+    },
+    [userId, taskDefId]
+  );
+
   const processFile = useCallback(
-    (file: File) => {
-      // Phase 1.5 — validate type and size at the "API boundary"
+    async (file: File) => {
+      // Client-side validation (advisory — Storage policies enforce server-side)
       if (!ACCEPTED_TYPES.includes(file.type)) {
         onError(t("errors.invalidFileType"));
         return;
@@ -76,25 +145,45 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
 
       setProgress(0);
       setFileName(file.name);
+      setUploading(true);
 
-      const reader = new FileReader();
-      reader.onprogress = (e) => {
-        if (e.lengthComputable) {
-          setProgress(Math.round((e.loaded / e.total) * 100));
+      try {
+        // Fallback: if Supabase not configured, use base64 for local dev
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        if (!supabaseUrl || supabaseUrl === "https://placeholder.supabase.co") {
+          // Local dev fallback: use dataUrl
+          const reader = new FileReader();
+          reader.onprogress = (e) => {
+            if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+          };
+          reader.onload = () => {
+            setProgress(100);
+            // In dev mode, pass the dataUrl as the "path" so proof preview works
+            onFileAccepted(reader.result as string, file.name);
+            setTimeout(() => setProgress(null), 600);
+            setUploading(false);
+          };
+          reader.onerror = () => {
+            onError(t("errors.genericError"));
+            setProgress(null);
+            setUploading(false);
+          };
+          reader.readAsDataURL(file);
+          return;
         }
-      };
-      reader.onload = () => {
-        setProgress(100);
-        onFileAccepted(reader.result as string, file.name);
-        setTimeout(() => setProgress(null), 600);
-      };
-      reader.onerror = () => {
-        onError(t("errors.genericError"));
+
+        const storagePath = await uploadToSupabase(file);
+        onFileAccepted(storagePath, file.name);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : t("errors.genericError");
+        onError(msg);
         setProgress(null);
-      };
-      reader.readAsDataURL(file);
+        setFileName(null);
+      } finally {
+        setUploading(false);
+      }
     },
-    [onFileAccepted, onError, t]
+    [onFileAccepted, onError, t, uploadToSupabase]
   );
 
   const handleDrop = useCallback(
@@ -122,17 +211,14 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
     [processFile]
   );
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        inputRef.current?.click();
-      }
-    },
-    []
-  );
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      inputRef.current?.click();
+    }
+  }, []);
 
-  const isDone = fileName && progress === null;
+  const isDone = fileName && progress === null && !uploading;
 
   return (
     <div className="flex flex-col gap-2">
@@ -142,11 +228,12 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
         tabIndex={0}
         aria-label={t("tasks.proofFilePlaceholder")}
         aria-describedby={statusId}
+        aria-busy={uploading}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDragEnd={handleDragLeave}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !uploading && inputRef.current?.click()}
         onKeyDown={handleKeyDown}
         className={`relative w-full rounded-xl border-2 border-dashed transition-all duration-200 cursor-pointer
           flex flex-col items-center justify-center gap-3 py-8 px-4 text-center
@@ -155,10 +242,12 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
             ? "border-[#CCFF00]/60 bg-[#CCFF00]/5"
             : isDone
             ? "border-[#CCFF00]/30 bg-[#CCFF00]/5"
+            : uploading
+            ? "border-[#0066FF]/30 bg-[#0066FF]/5 cursor-not-allowed"
             : "border-[#1A1A1A] bg-[#000]/40 hover:border-[#333]"
           }`}
       >
-        {/* Hidden file input — click-to-browse fallback (Phase 4.4 accessibility) */}
+        {/* Hidden file input */}
         <input
           ref={inputRef}
           type="file"
@@ -167,6 +256,7 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
           className="sr-only"
           aria-hidden="true"
           tabIndex={-1}
+          disabled={uploading}
         />
 
         {isDone ? (
@@ -178,6 +268,16 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
               <p className="text-sm font-semibold text-[#CCFF00]">{fileName}</p>
               <p className="text-xs text-[#555] mt-0.5">Click to replace</p>
             </div>
+          </>
+        ) : uploading ? (
+          <>
+            <motion.div
+              className="w-8 h-8 border-2 border-[#0066FF] border-t-transparent rounded-full"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+              aria-hidden="true"
+            />
+            <p className="text-sm text-[#666]">Uploading{progress !== null ? ` ${progress}%` : "…"}</p>
           </>
         ) : (
           <>
@@ -219,8 +319,8 @@ export default function DropZone({ onFileAccepted, onError, currentFileName }: D
 
       {/* Screen-reader status */}
       <p id={statusId} className="sr-only" aria-live="polite">
-        {progress !== null
-          ? `Uploading: ${progress}%`
+        {uploading
+          ? `Uploading: ${progress ?? 0}%`
           : fileName
           ? `File ready: ${fileName}`
           : "No file selected"}

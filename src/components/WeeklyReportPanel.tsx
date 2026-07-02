@@ -2,17 +2,23 @@ import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { usePlanStore, WEEK_NAMES, WEEK_DATES, WEEKLY_CUMULATIVE, WEEKLY_MILESTONES } from "../lib/store";
+import { useAuth } from "../lib/auth";
 
 export default function WeeklyReportPanel() {
   const { t } = useTranslation();
-  const { currentWeek, tier, reports, submitReport, getWeekReport, reels, clubs } = usePlanStore();
+  const { user } = useAuth();
+  const { currentWeek, tier, reports, submitReport, getWeekReport, reels, clubs } = usePlanStore(
+    user?.id ?? "",
+    user?.teamId ?? "",
+    user?.tier ?? 4
+  );
 
   const [week, setWeek] = useState(currentWeek);
   const [formData, setFormData] = useState({ signups: 0, win: "", blocker: "" });
   const [submitted, setSubmitted] = useState(false);
 
   const existing = getWeekReport(week);
-  const targets = WEEKLY_CUMULATIVE[tier];
+  const targets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
   const cumTarget = targets[week - 1];
   const prevCum = week > 1 ? targets[week - 2] : 0;
   const weekTarget = cumTarget - prevCum;
@@ -23,12 +29,11 @@ export default function WeeklyReportPanel() {
 
   const milestone = WEEKLY_MILESTONES.find((m) => m.week === week);
 
-  const handleSubmit = () => {
-    const prevReport = reports.find((r) => r.week === week - 1);
-    const prevCumulative = prevReport?.cumulativeSignups ?? 0;
-    submitReport(week, {
+  const handleSubmit = async () => {
+    await submitReport({
+      userId: user?.id ?? "",
+      week,
       signups: formData.signups,
-      cumulativeSignups: prevCumulative + formData.signups,
       reelsPosted: postedReels,
       clubsActive: activeClubs,
       win: formData.win,
@@ -82,7 +87,6 @@ export default function WeeklyReportPanel() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
               { label: "Sign-ups (week)", value: existing.signups, color: "#0066FF" },
-              { label: "Cumulative", value: existing.cumulativeSignups.toLocaleString(), color: "#CCFF00" },
               { label: "Reels Posted", value: `${existing.reelsPosted}/3`, color: "#FF6A00" },
               { label: "Active Clubs", value: existing.clubsActive, color: "#CCFF00" },
             ].map((s) => (

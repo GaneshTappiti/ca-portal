@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { usePlanStore, WEEK_NAMES, WEEK_DATES, WEEKLY_REELS, WEEKLY_CUMULATIVE } from "../lib/store";
+import { useAuth } from "../lib/auth";
 import type { ReelType } from "../lib/store";
 
 const REEL_TYPE_META: Record<ReelType, { label: string; color: string; icon: string }> = {
@@ -12,7 +13,12 @@ const REEL_TYPE_META: Record<ReelType, { label: string; color: string; icon: str
 
 export default function ReelTracker() {
   const { t } = useTranslation();
-  const { currentWeek, reels, toggleReelPosted, getWeekReels } = usePlanStore();
+  const { user } = useAuth();
+  const { currentWeek, reels, toggleReelPosted, getWeekReels, tier } = usePlanStore(
+    user?.id ?? "",
+    user?.teamId ?? "",
+    user?.tier ?? 4
+  );
   const [selectedWeek, setSelectedWeek] = useState(currentWeek);
 
   const weekReels = useMemo(() => getWeekReels(selectedWeek), [getWeekReels, selectedWeek]);
@@ -89,7 +95,7 @@ export default function ReelTracker() {
                   </div>
                 </div>
                 <button
-                  onClick={() => toggleReelPosted(selectedWeek, type)}
+                  onClick={() => toggleReelPosted({ userId: user?.id ?? "", week: selectedWeek, type })}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                     posted
                       ? "bg-[#CCFF00] text-black hover:opacity-80"
@@ -106,7 +112,7 @@ export default function ReelTracker() {
                     type="url"
                     placeholder="Reel URL (optional)"
                     defaultValue={reelEntry.url ?? ""}
-                    onChange={(e) => toggleReelPosted(selectedWeek, type, { url: e.target.value })}
+                    onChange={(e) => toggleReelPosted({ userId: user?.id ?? "", week: selectedWeek, type, url: e.target.value })}
                     className="flex-1 px-3 py-1.5 rounded-lg bg-[#000] border border-[#1A1A1A] text-xs text-white placeholder-[#444] focus:outline-none focus:border-[#CCFF00]/40"
                   />
                 </div>
@@ -124,7 +130,7 @@ export default function ReelTracker() {
         </div>
         <div className="w-full h-2 rounded-full bg-[#1A1A1A] overflow-hidden">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-[#0066FF] via-[#FF6A00] to-[#CCFF00] transition-all"
+            className="h-full rounded-full bg-[#CCFF00] transition-all"
             style={{ width: `${(postedCount / 3) * 100}%` }}
           />
         </div>

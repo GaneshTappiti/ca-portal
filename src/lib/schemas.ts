@@ -32,14 +32,20 @@ export const loginSchema = z.object({
 export type LoginInput = z.infer<typeof loginSchema>;
 
 // ─── Task submission ──────────────────────────────────────────────────────────
+// proofUrl accepts either:
+//   - A Supabase Storage path (production): "{userId}/{taskId}/filename.jpg"
+//   - A base64 dataUrl (dev fallback): "data:image/..."
 
 export const taskSubmissionSchema = z.object({
   taskId: z.string().min(1, "Task ID is required."),
-  proofDataUrl: z
+  proofUrl: z
     .string()
     .min(1, "Proof file is required. Upload an image or video.")
     .refine(
-      (v) => v.startsWith("data:image/") || v.startsWith("data:video/"),
+      (v) =>
+        v.startsWith("data:image/") ||
+        v.startsWith("data:video/") ||
+        (v.length > 5 && !v.includes(" ")),  // storage path
       "Only image or video files are accepted."
     ),
   notes: z

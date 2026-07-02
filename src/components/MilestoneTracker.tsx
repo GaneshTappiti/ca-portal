@@ -21,10 +21,14 @@ const TIER_HEADCOUNTS: Record<Tier, string> = {
 
 export default function MilestoneTracker() {
   const { user } = useAuth();
-  const { tier, currentWeek, clubs } = usePlanStore();
-  const metrics = useMetrics(user?.email);
+  const { tier, currentWeek, clubs } = usePlanStore(
+    user?.id ?? "",
+    user?.teamId ?? "",
+    user?.tier ?? 4
+  );
+  const metrics = useMetrics(user?.email ?? "");
 
-  const targets = WEEKLY_CUMULATIVE[tier];
+  const targets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
   const totalTarget = targets[12];
 
   const milestones = useMemo(() => {
@@ -43,7 +47,7 @@ export default function MilestoneTracker() {
         <h2 className="text-lg font-bold text-white">Milestone Ladder</h2>
       </div>
       <p className="text-xs text-[#666] mb-5">
-        Tier {tier} ({TIER_HEADCOUNTS[tier]}) · Target: {totalTarget.toLocaleString()} users · Current: <span className="text-[#CCFF00] font-semibold">{metrics.verifiedUsers.toLocaleString()}</span>
+        Tier {tier} campus ({TIER_HEADCOUNTS[tier as 1 | 2 | 3 | 4] ?? TIER_HEADCOUNTS[4]}) · Target: {totalTarget.toLocaleString()} users · Current: <span className="text-[#CCFF00] font-semibold">{metrics.verifiedUsers.toLocaleString()}</span>
       </p>
 
       <div className="space-y-3">
