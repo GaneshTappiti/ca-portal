@@ -66,38 +66,21 @@ async function adminCreateCA(params: {
   role: "MEMBER" | "LEAD";
   tier: number;
 }) {
-  // 1. Create auth user via Supabase Admin API (service role needed in prod;
-  //    for now use signUp which triggers the handle_new_user trigger)
-  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-    email: params.email.trim().toLowerCase(),
-    password: params.password,
-    options: {
-      data: {
-        full_name: params.fullName,
-        college: params.college,
-      },
-    },
+  // Call the secure RPC function to create the user directly in the database
+  // This bypasses the frontend `signUp` limitation and prevents logging out the admin.
+  const { data, error } = await supabase.rpc("admin_create_user", {
+    p_email: params.email.trim().toLowerCase(),
+    p_password: params.password,
+    p_full_name: params.fullName,
+    p_college: params.college,
+    p_role: params.role,
+    p_tier: params.tier,
   });
-  if (signUpError) throw new Error(signUpError.message);
-  if (!signUpData.user) throw new Error("User creation failed");
 
-  const userId = signUpData.user.id;
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("No response from server");
 
-  // 2. Update the profile with role + tier (trigger creates it with MEMBER/tier 4)
-  const caId = "CA-" + userId.replace(/-/g, "").toUpperCase().slice(0, 8);
-  const { error: profileError } = await supabase
-    .from("profiles")
-    .update({
-      role: params.role,
-      tier: params.tier,
-      college: params.college,
-      full_name: params.fullName,
-      team_id: params.role === "LEAD" ? caId : null,
-    })
-    .eq("id", userId);
-
-  if (profileError) throw new Error(profileError.message);
-  return { userId, caId };
+  return { userId: data.user_id, caId: data.ca_id };
 }
 
 async function adminUpdateProfile(params: {

@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { usePlanStore, WEEK_NAMES, WEEK_DATES, WEEKLY_REELS, WEEKLY_CUMULATIVE } from "../lib/store";
+import { usePlanStore } from "../lib/store";
 import { useAuth } from "../lib/auth";
 import type { ReelType } from "../lib/store";
 
@@ -14,7 +14,17 @@ const REEL_TYPE_META: Record<ReelType, { label: string; color: string; icon: str
 export default function ReelTracker() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { currentWeek, reels, toggleReelPosted, getWeekReels, tier } = usePlanStore(
+  const {
+    currentWeek,
+    reels,
+    toggleReelPosted,
+    getWeekReels,
+    tier,
+    weeklyCumulative,
+    weeklyReels,
+    weekNames,
+    weekDates,
+  } = usePlanStore(
     user?.id ?? "",
     user?.teamId ?? "",
     user?.tier ?? 4
@@ -22,15 +32,15 @@ export default function ReelTracker() {
   const [selectedWeek, setSelectedWeek] = useState(currentWeek);
 
   const weekReels = useMemo(() => getWeekReels(selectedWeek), [getWeekReels, selectedWeek]);
-  const weekData = WEEKLY_REELS[selectedWeek - 1];
+  const weekData = weeklyReels[selectedWeek - 1] ?? { meme: "", culture: "", conversation: "" };
   const postedCount = weekReels.filter((r) => r.posted).length;
 
   const weeks = useMemo(() => Array.from({ length: 13 }, (_, i) => i + 1), []);
 
   const allReelTypes: ReelType[] = ["meme", "campus_culture", "student_conversation"];
 
-  const targets = WEEKLY_CUMULATIVE[1];
-  const cumTarget = targets[selectedWeek - 1];
+  const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+  const cumTarget = targets[selectedWeek - 1] ?? 0;
 
   return (
     <section className="rounded-2xl bg-[#0A0A0A]/80 backdrop-blur-xl border border-[#1A1A1A]/50 p-5 sm:p-6 shadow-[0_0_40px_rgba(255,255,255,0.03)]">
@@ -62,8 +72,8 @@ export default function ReelTracker() {
 
       {/* Week header */}
       <div className="mb-4 px-3 py-2 rounded-lg bg-[#000]/40 border border-[#1A1A1A]/30">
-        <p className="text-sm font-bold text-white">{WEEK_NAMES[selectedWeek - 1]}</p>
-        <p className="text-xs text-[#555]">{WEEK_DATES[selectedWeek - 1]} · Target: {cumTarget.toLocaleString()} cumulative users</p>
+        <p className="text-sm font-bold text-white">{weekNames[selectedWeek - 1]}</p>
+        <p className="text-xs text-[#555]">{weekDates[selectedWeek - 1]} · Target: {cumTarget.toLocaleString()} cumulative users</p>
       </div>
 
       {/* Reel cards */}

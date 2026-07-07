@@ -15,8 +15,10 @@
 import { memo, lazy, Suspense, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useReducedMotion } from "framer-motion";
-import { useMetrics, usePlanStore, useTaskStore, WEEKLY_CUMULATIVE } from "./lib/store";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMetrics, usePlanStore, useTaskStore } from "./lib/store";
 import { useAuth } from "./lib/auth";
+import { fetchDailyChecklist, saveDailyChecklist } from "./lib/queries/dailyChecklist";
 
 const MissionBoard = lazy(() => import("./components/MissionBoard"));
 
@@ -188,21 +190,27 @@ const MetricCell = memo(function MetricCell({
   );
 });
 
-// ─── Daily checklist (persisted per user+day in localStorage) ─────────────────
+// ─── Daily checklist (persisted per user+day in Supabase) ────────────────────
 
 function DailyChecklist({ userId }: { userId: string }) {
-  const today = new Date().toDateString();
-  const storageKey = `clstr_daily_${userId}_${today}`;
+  const qc = useQueryClient();
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-  const [checks, setChecks] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem(storageKey) ?? "{}"); }
-    catch { return {}; }
+  const { data: checks = {} } = useQuery({
+    queryKey: ["daily_checklist", userId, today],
+    queryFn: () => fetchDailyChecklist(userId, today),
+    enabled: !!userId,
+    staleTime: 10_000,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: (next: Record<string, boolean>) => saveDailyChecklist(userId, today, next),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["daily_checklist", userId, today] }),
   });
 
   const toggle = (key: string) => {
     const next = { ...checks, [key]: !checks[key] };
-    setChecks(next);
-    localStorage.setItem(storageKey, JSON.stringify(next));
+    saveMutation.mutate(next);
   };
 
   const items = [
@@ -330,7 +338,7 @@ export default function ClstrDashboard() {
   // ── Data hooks (all Supabase-backed) ──────────────────────────────────────
   const metrics = useMetrics(user?.id, user?.campus ?? "raghuinstitute");
 
-  const { currentWeek, tier, clubs, isLoading: planLoading } = usePlanStore(
+  const { currentWeek, tier, clubs, weeklyCumulative, isLoading: planLoading } = usePlanStore(
     user?.id ?? "",
     user?.teamId ?? "",
     user?.tier ?? 4
@@ -343,8 +351,8 @@ export default function ClstrDashboard() {
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const caId        = useMemo(() => deriveCAId(user?.id ?? "MOCK0001"), [user?.id]);
-  const targets     = WEEKLY_CUMULATIVE[tier as 1|2|3|4] ?? WEEKLY_CUMULATIVE[4];
-  const totalTarget = targets[12];
+  const targets     = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4] ?? [];
+  const totalTarget = targets[12] ?? 0;
 
   // Clubs: prefer live count from main Clstr DB; fall back to local clubs table
   const localActiveClubs = useMemo(() => clubs.filter(c => c.active).length, [clubs]);

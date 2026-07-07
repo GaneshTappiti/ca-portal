@@ -4,7 +4,7 @@
  */
 
 import { supabase } from "../supabaseClient";
-import type { ReelEntry, ClubEntry, WeeklyReport, ReelType } from "../types";
+import type { ReelEntry, ClubEntry, WeeklyReport, ReelType, Tier } from "../types";
 
 // ─── Reels ────────────────────────────────────────────────────────────────────
 
@@ -204,4 +204,52 @@ export async function submitReport(params: {
   });
 
   if (error) throw error;
+}
+
+// ─── Program Configuration ───────────────────────────────────────────────────
+
+export interface ProgramConfig {
+  campaignStartDate: string;
+  tierTargets: Record<Tier, string>;
+  weeklyCumulative: Record<Tier, number[]>;
+  weekNames: string[];
+  weekDates: string[];
+  weeklyReels: { week: number; meme: string; culture: string; conversation: string }[];
+  weeklyClubFocus: { week: number; focus: string }[];
+  weeklyMilestones: { week: number; label: string; name: string; pctTarget: number; reward: string; isBonus?: boolean }[];
+}
+
+export async function fetchProgramConfig(): Promise<ProgramConfig> {
+  const { data, error } = await supabase
+    .from("program_config")
+    .select("*")
+    .eq("id", "active")
+    .single();
+
+  if (error) throw error;
+
+  const tierTargets = {} as Record<Tier, string>;
+  if (data.tier_targets) {
+    Object.entries(data.tier_targets).forEach(([k, v]) => {
+      tierTargets[Number(k) as Tier] = v as string;
+    });
+  }
+
+  const weeklyCumulative = {} as Record<Tier, number[]>;
+  if (data.weekly_cumulative) {
+    Object.entries(data.weekly_cumulative).forEach(([k, v]) => {
+      weeklyCumulative[Number(k) as Tier] = v as number[];
+    });
+  }
+
+  return {
+    campaignStartDate: data.campaign_start_date,
+    tierTargets,
+    weeklyCumulative,
+    weekNames: data.week_names,
+    weekDates: data.week_dates,
+    weeklyReels: data.weekly_reels,
+    weeklyClubFocus: data.weekly_club_focus,
+    weeklyMilestones: data.weekly_milestones,
+  };
 }

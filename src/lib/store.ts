@@ -47,6 +47,7 @@ import {
   removeClub,
   fetchReports,
   submitReport,
+  fetchProgramConfig,
 } from "./queries/plan";
 import {
   fetchNotifications,
@@ -116,7 +117,45 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** Returns true when the id is a dev-only mock (not a real Supabase UUID). */
 export function isMockId(id: string | null | undefined): boolean {
   if (!id) return true;
-  return !UUID_RE.test(id);
+  const isMock = !UUID_RE.test(id);
+  if (isMock) {
+    console.warn(`[isMockId] Warning: ID '${id}' is not a valid UUID. This might be a mock or legacy ID.`);
+  }
+  return false;
+}
+
+// ─── Program Config Hook ──────────────────────────────────────────────────────
+
+import {
+  WEEKLY_CUMULATIVE as FALLBACK_WEEKLY_CUMULATIVE,
+  WEEK_NAMES as FALLBACK_WEEK_NAMES,
+  WEEK_DATES as FALLBACK_WEEK_DATES,
+  WEEKLY_REELS as FALLBACK_WEEKLY_REELS,
+  WEEKLY_CLUB_FOCUS as FALLBACK_WEEKLY_CLUB_FOCUS,
+  WEEKLY_MILESTONES as FALLBACK_WEEKLY_MILESTONES,
+  TIER_TARGETS as FALLBACK_TIER_TARGETS,
+} from "./types";
+
+export function useProgramConfig() {
+  const query = useQuery({
+    queryKey: ["program_config"],
+    queryFn: fetchProgramConfig,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const data = query.data;
+
+  return {
+    ...query,
+    campaignStartDate: data?.campaignStartDate ?? "2026-07-01",
+    tierTargets: data?.tierTargets ?? FALLBACK_TIER_TARGETS,
+    weeklyCumulative: data?.weeklyCumulative ?? FALLBACK_WEEKLY_CUMULATIVE,
+    weekNames: data?.weekNames ?? FALLBACK_WEEK_NAMES,
+    weekDates: data?.weekDates ?? FALLBACK_WEEK_DATES,
+    weeklyReels: data?.weeklyReels ?? FALLBACK_WEEKLY_REELS,
+    weeklyClubFocus: data?.weeklyClubFocus ?? FALLBACK_WEEKLY_CLUB_FOCUS,
+    weeklyMilestones: data?.weeklyMilestones ?? FALLBACK_WEEKLY_MILESTONES,
+  };
 }
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
@@ -291,6 +330,8 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
   const isRealUser = !isMockId(userId);
   const isRealTeam = !isMockId(teamId);
 
+  const config = useProgramConfig();
+
   const reelsQuery = useQuery({
     queryKey: QueryKeys.reels(userId),
     queryFn:  () => fetchReels(userId),
@@ -340,16 +381,15 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
 
   const currentWeek = useMemo(() => {
     const now = Date.now();
-    const start = new Date("2026-07-01").getTime();
+    const start = new Date(config.campaignStartDate).getTime();
     const msPerWeek = 7 * 86400 * 1000;
     const diff = now - start;
     if (diff < 0) return 1;
     const wk = Math.floor(diff / msPerWeek) + 1;
     return Math.min(Math.max(wk, 1), 13);
-  }, []);
+  }, [config.campaignStartDate]);
 
-  // WEEKLY_CUMULATIVE imported statically at top of file
-  const weeklyTargets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
+  const weeklyTargets = config.weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? config.weeklyCumulative[4];
   const currentTarget = weeklyTargets[currentWeek - 1] ?? 0;
 
   const clubs = clubsQuery.data ?? [];
@@ -373,7 +413,7 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
     reels: reelsQuery.data ?? [],
     clubs,
     reports: reportsQuery.data ?? [],
-    isLoading: reelsQuery.isLoading || clubsQuery.isLoading || reportsQuery.isLoading,
+    isLoading: reelsQuery.isLoading || clubsQuery.isLoading || reportsQuery.isLoading || config.isLoading,
     toggleReelPosted: toggleReelMutation.mutateAsync,
     addClub: addClubMutation.mutateAsync,
     updateClub: updateClubMutation.mutateAsync,
@@ -383,6 +423,14 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
     getWeekReport,
     activeClubsCount,
     totalOnboardedClubs: clubs.length,
+    campaignStartDate: config.campaignStartDate,
+    tierTargets: config.tierTargets,
+    weeklyCumulative: config.weeklyCumulative,
+    weekNames: config.weekNames,
+    weekDates: config.weekDates,
+    weeklyReels: config.weeklyReels,
+    weeklyClubFocus: config.weeklyClubFocus,
+    weeklyMilestones: config.weeklyMilestones,
   };
 }
 

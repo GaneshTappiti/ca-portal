@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { usePlanStore, WEEK_NAMES, WEEK_DATES, WEEKLY_REELS, WEEKLY_CLUB_FOCUS, WEEKLY_MILESTONES, WEEKLY_CUMULATIVE } from "../lib/store";
+import { usePlanStore } from "../lib/store";
 import { useAuth } from "../lib/auth";
 import type { Tier } from "../lib/store";
 
@@ -10,7 +10,18 @@ const TIER_LABELS: Record<Tier, string> = { 1: "T1", 2: "T2", 3: "T3", 4: "T4" }
 export default function WeekPlan() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { tier, currentWeek, getWeekReels, getWeekReport } = usePlanStore(
+  const {
+    tier,
+    currentWeek,
+    getWeekReels,
+    getWeekReport,
+    weeklyCumulative,
+    weeklyReels,
+    weeklyClubFocus,
+    weeklyMilestones,
+    weekNames,
+    weekDates,
+  } = usePlanStore(
     user?.id ?? "",
     user?.teamId ?? "",
     user?.tier ?? 4
@@ -43,9 +54,9 @@ export default function WeekPlan() {
           const isCurrent = week === currentWeek;
           const isPast = week < currentWeek;
           const isExpanded = expandedWeek === week;
-          const milestone = WEEKLY_MILESTONES.find((m) => m.week === week);
-          const targets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
-          const cumTarget = targets[week - 1];
+          const milestone = weeklyMilestones.find((m) => m.week === week);
+          const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+          const cumTarget = targets[week - 1] ?? 0;
 
           return (
             <div key={week}>
@@ -79,9 +90,9 @@ export default function WeekPlan() {
                           isCurrent ? "text-[#F0F0F0]" : isPast ? "text-[#555]" : "text-[#888]"
                         }`}
                       >
-                        {WEEK_NAMES[week - 1]}
+                        {weekNames[week - 1]}
                       </span>
-                      <span className="text-[10px] text-[#2E2E2E] font-mono">{WEEK_DATES[week - 1]}</span>
+                      <span className="text-[10px] text-[#2E2E2E] font-mono">{weekDates[week - 1]}</span>
                       {milestone && (
                         <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-[#C8FF00] border border-[#C8FF00]/20 px-1.5 py-0.5">
                           {milestone.isBonus ? "BONUS" : "MILESTONE"}
@@ -147,9 +158,9 @@ export default function WeekPlan() {
                           </span>
                         </div>
                         {[
-                          { type: "meme" as const, label: "Meme", desc: WEEKLY_REELS[week - 1].meme },
-                          { type: "campus_culture" as const, label: "Culture / Story", desc: WEEKLY_REELS[week - 1].culture },
-                          { type: "student_conversation" as const, label: "Conversation / Brand", desc: WEEKLY_REELS[week - 1].conversation },
+                          { type: "meme" as const, label: "Meme", desc: weeklyReels[week - 1]?.meme },
+                          { type: "campus_culture" as const, label: "Culture / Story", desc: weeklyReels[week - 1]?.culture },
+                          { type: "student_conversation" as const, label: "Conversation / Brand", desc: weeklyReels[week - 1]?.conversation },
                         ].map((r) => {
                           const reelEntry = reels.find((re) => re.type === r.type);
                           const done = reelEntry?.posted;
@@ -186,7 +197,7 @@ export default function WeekPlan() {
                           Focus
                         </span>
                         <p className="text-[11px] text-[#666] leading-relaxed">
-                          {WEEKLY_CLUB_FOCUS[week - 1].focus}
+                          {weeklyClubFocus[week - 1]?.focus}
                         </p>
                       </div>
 

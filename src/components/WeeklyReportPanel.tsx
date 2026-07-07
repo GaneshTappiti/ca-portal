@@ -1,13 +1,25 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
-import { usePlanStore, WEEK_NAMES, WEEK_DATES, WEEKLY_CUMULATIVE, WEEKLY_MILESTONES } from "../lib/store";
+import { usePlanStore } from "../lib/store";
 import { useAuth } from "../lib/auth";
 
 export default function WeeklyReportPanel() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { currentWeek, tier, reports, submitReport, getWeekReport, reels, clubs } = usePlanStore(
+  const {
+    currentWeek,
+    tier,
+    reports,
+    submitReport,
+    getWeekReport,
+    reels,
+    clubs,
+    weeklyCumulative,
+    weeklyMilestones,
+    weekNames,
+    weekDates,
+  } = usePlanStore(
     user?.id ?? "",
     user?.teamId ?? "",
     user?.tier ?? 4
@@ -18,16 +30,16 @@ export default function WeeklyReportPanel() {
   const [submitted, setSubmitted] = useState(false);
 
   const existing = getWeekReport(week);
-  const targets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
-  const cumTarget = targets[week - 1];
-  const prevCum = week > 1 ? targets[week - 2] : 0;
+  const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+  const cumTarget = targets[week - 1] ?? 0;
+  const prevCum = week > 1 ? (targets[week - 2] ?? 0) : 0;
   const weekTarget = cumTarget - prevCum;
 
   const weekReels = reels.filter((r) => r.week === week);
   const postedReels = weekReels.filter((r) => r.posted).length;
   const activeClubs = clubs.filter((c) => c.active).length;
 
-  const milestone = WEEKLY_MILESTONES.find((m) => m.week === week);
+  const milestone = weeklyMilestones.find((m) => m.week === week);
 
   const handleSubmit = async () => {
     await submitReport({
@@ -78,8 +90,8 @@ export default function WeeklyReportPanel() {
       </div>
 
       <div className="mb-4 px-3 py-2 rounded-lg bg-[#000]/40 border border-[#1A1A1A]/30">
-        <p className="text-sm font-bold text-white">{WEEK_NAMES[week - 1]}</p>
-        <p className="text-xs text-[#555]">{WEEK_DATES[week - 1]} · Target this week: <span className="text-[#CCFF00] font-semibold">+{weekTarget}</span> · Cumulative: <span className="text-[#0066FF] font-semibold">{cumTarget.toLocaleString()}</span></p>
+        <p className="text-sm font-bold text-white">{weekNames[week - 1]}</p>
+        <p className="text-xs text-[#555]">{weekDates[week - 1]} · Target this week: <span className="text-[#CCFF00] font-semibold">+{weekTarget}</span> · Cumulative: <span className="text-[#0066FF] font-semibold">{cumTarget.toLocaleString()}</span></p>
       </div>
 
       {existing?.submitted ? (

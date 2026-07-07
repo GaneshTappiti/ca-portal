@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { motion } from "framer-motion";
-import { useMetrics, usePlanStore, WEEKLY_MILESTONES, WEEKLY_CUMULATIVE } from "../lib/store";
+import { useMetrics, usePlanStore } from "../lib/store";
 import { useAuth } from "../lib/auth";
 import type { Tier } from "../lib/store";
 
@@ -21,25 +21,25 @@ const TIER_HEADCOUNTS: Record<Tier, string> = {
 
 export default function MilestoneTracker() {
   const { user } = useAuth();
-  const { tier, currentWeek, clubs } = usePlanStore(
+  const { tier, currentWeek, clubs, weeklyCumulative, weeklyMilestones } = usePlanStore(
     user?.id ?? "",
     user?.teamId ?? "",
     user?.tier ?? 4
   );
   const metrics = useMetrics(user?.email ?? "");
 
-  const targets = WEEKLY_CUMULATIVE[tier as 1 | 2 | 3 | 4] ?? WEEKLY_CUMULATIVE[4];
-  const totalTarget = targets[12];
+  const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+  const totalTarget = targets[12] ?? 0;
 
   const milestones = useMemo(() => {
-    return WEEKLY_MILESTONES.map((m, idx) => {
+    return weeklyMilestones.map((m, idx) => {
       const userTarget = Math.round(totalTarget * (m.pctTarget / 100));
       const isCompleted = metrics.verifiedUsers >= userTarget;
       const pct = Math.min((metrics.verifiedUsers / userTarget) * 100, 100);
 
       return { ...m, userTarget, isCompleted, pct, color: MILESTONE_COLORS[idx] };
     });
-  }, [metrics.verifiedUsers, totalTarget]);
+  }, [metrics.verifiedUsers, totalTarget, weeklyMilestones]);
 
   return (
     <section className="rounded-2xl bg-[#0A0A0A]/80 backdrop-blur-xl border border-[#1A1A1A]/50 p-5 sm:p-6 shadow-[0_0_40px_rgba(255,255,255,0.03)]">

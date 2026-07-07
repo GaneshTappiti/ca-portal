@@ -21,9 +21,6 @@ import {
   useTaskStore,
   usePlanStore,
   useMetrics,
-  WEEKLY_REELS,
-  WEEKLY_MILESTONES,
-  WEEKLY_CUMULATIVE,
   broadcastEvent,
 } from "../lib/store";
 import { useAuth } from "../lib/auth";
@@ -467,6 +464,9 @@ export default function MissionBoard() {
     getWeekReels, getWeekReport,
     toggleReelPosted, addClub, updateClub, submitReport,
     activeClubsCount,
+    weeklyCumulative,
+    weeklyReels,
+    weeklyMilestones,
   } = usePlanStore(user?.id ?? "", user?.teamId ?? "", user?.tier ?? 4);
   const metrics = useMetrics(user?.email ?? "");
 
@@ -476,7 +476,7 @@ export default function MissionBoard() {
   const [toast, setToast]             = useState<ToastState>(null);
   const [toastKey, setToastKey]       = useState(0);
 
-  const showToast = useCallback((message: string, type: ToastState["type"]) => {
+  const showToast = useCallback((message: string, type: "success" | "info" | "error") => {
     setToastKey(k => k + 1);
     setToast({ message, type, id: Date.now() });
   }, []);
@@ -494,7 +494,7 @@ export default function MissionBoard() {
   // ── Build all mission items ─────────────────────────────────────────────────
   const allItems = useMemo((): MissionItem[] => {
     const items: MissionItem[] = [];
-    const targets = WEEKLY_CUMULATIVE[tier as 1|2|3|4] ?? WEEKLY_CUMULATIVE[4];
+    const targets = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4] ?? [];
 
     // 1. Reel tasks — current week
     const weekReels = getWeekReels(currentWeek);
@@ -506,10 +506,10 @@ export default function MissionBoard() {
     reelDefs.forEach(({ type, title }) => {
       const entry = weekReels.find(r => r.type === type);
       const desc = type === "meme"
-        ? WEEKLY_REELS[currentWeek - 1]?.meme
+        ? weeklyReels[currentWeek - 1]?.meme
         : type === "campus_culture"
-          ? WEEKLY_REELS[currentWeek - 1]?.culture
-          : WEEKLY_REELS[currentWeek - 1]?.conversation;
+          ? weeklyReels[currentWeek - 1]?.culture
+          : weeklyReels[currentWeek - 1]?.conversation;
       items.push({
         id: `reel-${currentWeek}-${type}`,
         type: "reel",
@@ -564,7 +564,7 @@ export default function MissionBoard() {
 
     // 4. Milestones
     const totalTarget = targets[12];
-    WEEKLY_MILESTONES.forEach((m) => {
+    weeklyMilestones.forEach((m) => {
       const userTarget = Math.round(totalTarget * (m.pctTarget / 100));
       const isCompleted = metrics.verifiedUsers >= userTarget;
       const halfway = metrics.verifiedUsers >= userTarget * 0.5;
@@ -642,7 +642,15 @@ export default function MissionBoard() {
         await toggleReelPosted({ userId: user.id, week: item.week ?? currentWeek, type: reelType, url: proofUrl });
         showToast("Reel marked as posted!", "success");
       } else if (item.type === "report") {
-        await submitReport({ userId: user.id, week: item.week ?? currentWeek, content: notes || proofUrl });
+        await submitReport({
+          userId: user.id,
+          week: item.week ?? currentWeek,
+          signups: 0,
+          reelsPosted: 0,
+          clubsActive: activeClubsCount,
+          win: notes || proofUrl || "Weekly Report Submitted",
+          blocker: "",
+        });
         showToast(`Week ${item.week} report submitted!`, "success");
       } else if (item.type === "club") {
         if (item.meta?.club) {

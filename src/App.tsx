@@ -18,7 +18,7 @@ import ClstrAuthGateway from "./ClstrAuthGateway";
 import NotificationCenter from "./components/NotificationCenter";
 import TeamManager from "./components/TeamManager";
 import { AuthProvider, useAuth } from "./lib/auth";
-import { usePlanStore, WEEKLY_CUMULATIVE } from "./lib/store";
+import { usePlanStore } from "./lib/store";
 import "./lib/i18n";
 
 // ─── Skeleton loader ──────────────────────────────────────────────────────────
@@ -64,8 +64,8 @@ const LanguageSelector = memo(function LanguageSelector() {
 // ─── Week ticker (signature element) ─────────────────────────────────────────
 
 function WeekTicker({ userId, teamId, tier }: { userId: string; teamId: string; tier: number }) {
-  const { currentWeek } = usePlanStore(userId, teamId, tier as 1|2|3|4);
-  const targets = WEEKLY_CUMULATIVE[tier as 1|2|3|4] ?? WEEKLY_CUMULATIVE[4];
+  const { currentWeek, weeklyCumulative } = usePlanStore(userId, teamId, tier as 1|2|3|4);
+  const targets = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4];
   const totalWeeks = 13;
   const pct = Math.min((currentWeek / totalWeeks) * 100, 100);
 

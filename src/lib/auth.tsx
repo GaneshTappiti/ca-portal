@@ -56,20 +56,7 @@ export interface AuthContextValue {
   hasRole: (required: AuthRole) => boolean;
 }
 
-const MOCK_CREDENTIALS: Record<string, { password: string; user: AuthUser }> = {
-  "lead@clstr.in": {
-    password: "lead123",
-    user: { id: "mock-lead", email: "lead@clstr.in", role: "LEAD", name: "Ganesh Tappiti", campus: "clstr.raghuinstitute", teamId: "mock-team", totalPoints: 1200, tier: 2 },
-  },
-  "admin@clstr.in": {
-    password: "admin123",
-    user: { id: "mock-admin", email: "admin@clstr.in", role: "SUPER_ADMIN", name: "Super Admin", campus: "clstr.global", teamId: undefined, totalPoints: 0, tier: 1 },
-  },
-  "team@clstr.in": {
-    password: "team123",
-    user: { id: "mock-team", email: "team@clstr.in", role: "MEMBER", name: "Team Member", campus: "clstr.raghuinstitute", teamId: "mock-team", totalPoints: 400, tier: 4 },
-  },
-};
+
 
 // ─── Helper: load profile for authenticated user ──────────────────────────────
 
@@ -111,15 +98,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let mounted = true;
 
     async function initAuth() {
-      const mockSession = sessionStorage.getItem("clstr_mock_session");
-      if (mockSession) {
-        if (mounted) {
-          setUser(JSON.parse(mockSession));
-          setIsLoading(false);
-        }
-        return;
-      }
-
       const { data: { session } } = await supabase.auth.getSession();
 
       if (session?.user && mounted) {
@@ -163,12 +141,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
       const normalizedEmail = email.trim().toLowerCase();
-      if (MOCK_CREDENTIALS[normalizedEmail]?.password === password) {
-        const mockUser = MOCK_CREDENTIALS[normalizedEmail].user;
-        sessionStorage.setItem("clstr_mock_session", JSON.stringify(mockUser));
-        setUser(mockUser);
-        return { success: true };
-      }
 
       const { error } = await supabase.auth.signInWithPassword({
         email: normalizedEmail,
@@ -280,7 +252,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ─── Logout ─────────────────────────────────────────────────────────────────
 
   const logout = useCallback(async () => {
-    sessionStorage.removeItem("clstr_mock_session");
     await supabase.auth.signOut();
     setUser(null);
   }, []);
