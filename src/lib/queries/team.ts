@@ -48,7 +48,10 @@ export async function fetchInvites(teamId: string): Promise<InviteCode[]> {
     .from("invites")
     .select("*")
     .eq("team_id", teamId)
-    .is("used_by", null)
+    // Show both:
+    //   • Single-use codes that haven’t been used yet (used_by IS NULL)
+    //   • Reusable codes regardless of used_by status
+    .or("used_by.is.null,is_reusable.eq.true")
     .order("created_at", { ascending: false });
 
   if (error) throw error;

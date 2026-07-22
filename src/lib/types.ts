@@ -18,6 +18,7 @@ export interface AuthUser {
   teamId?: string;
   totalPoints: number;
   tier: number;
+  caId?: string;     // Server-assigned CA ID from profiles.ca_id
 }
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────

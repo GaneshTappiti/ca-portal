@@ -30,7 +30,7 @@ export default function WeeklyReportPanel() {
   const [submitted, setSubmitted] = useState(false);
 
   const existing = getWeekReport(week);
-  const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+  const targets = weeklyCumulative[tier] ?? weeklyCumulative[4] ?? [];
   const cumTarget = targets[week - 1] ?? 0;
   const prevCum = week > 1 ? (targets[week - 2] ?? 0) : 0;
   const weekTarget = cumTarget - prevCum;

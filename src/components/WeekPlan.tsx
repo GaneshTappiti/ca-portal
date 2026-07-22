@@ -41,7 +41,7 @@ export default function WeekPlan() {
           <span className="text-[10px] font-mono text-[#3A3A3A]">13 Weeks</span>
         </div>
         <span className="text-[10px] font-bold font-mono text-[#C8FF00]">
-          {TIER_LABELS[tier as 1 | 2 | 3 | 4] ?? "T4"} · Wk {currentWeek}
+          {TIER_LABELS[tier] ?? "T4"} · Wk {currentWeek}
         </span>
       </div>
 
@@ -55,7 +55,7 @@ export default function WeekPlan() {
           const isPast = week < currentWeek;
           const isExpanded = expandedWeek === week;
           const milestone = weeklyMilestones.find((m) => m.week === week);
-          const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+          const targets = weeklyCumulative[tier] ?? weeklyCumulative[4] ?? [];
           const cumTarget = targets[week - 1] ?? 0;
 
           return (

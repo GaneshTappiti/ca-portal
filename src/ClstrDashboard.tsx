@@ -19,6 +19,11 @@ import { fetchDailyChecklist, saveDailyChecklist } from "./lib/queries/dailyChec
 import ReviewQueue from "./components/ReviewQueue";
 
 const MissionBoard = lazy(() => import("./components/MissionBoard"));
+const WeekPlan = lazy(() => import("./components/WeekPlan"));
+const ReelTracker = lazy(() => import("./components/ReelTracker"));
+const ClubOnboardingTracker = lazy(() => import("./components/ClubOnboardingTracker"));
+const WeeklyReportPanel = lazy(() => import("./components/WeeklyReportPanel"));
+const MilestoneTracker = lazy(() => import("./components/MilestoneTracker"));
 
 function Skeleton({ w = "w-full", h = "h-4", className = "" }: { w?: string; h?: string; className?: string }) {
   return (
@@ -276,7 +281,8 @@ function AtAGlance({
 export default function ClstrDashboard() {
   const { user } = useAuth();
   const prefersReduced = useReducedMotion();
-  const [activeView, setActiveView] = useState<"missions" | "review">("missions");
+  const [activeView, setActiveView] = useState<"missions" | "review" | "sprint">("missions");
+  const [sprintTab, setSprintTab] = useState<"weekplan" | "reels" | "clubs" | "report" | "milestones">("weekplan");
 
   const metrics = useMetrics(user?.id, user?.campus ?? "raghuinstitute");
 
@@ -291,8 +297,12 @@ export default function ClstrDashboard() {
     user?.teamId
   );
 
-  const caId = useMemo(() => user?.id ? `CA-${user.id.replace(/-/g, "").toUpperCase().slice(0, 8)}` : "CA-00000000", [user?.id]);
-  const targets = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4] ?? [];
+  const caId = useMemo(() => {
+    if (user?.caId) return user.caId;
+    if (user?.id) return `CA-${user.id.replace(/-/g, "").toUpperCase().slice(0, 8)}`;
+    return "CA-00000000";
+  }, [user?.caId, user?.id]);
+  const targets = weeklyCumulative[tier] ?? weeklyCumulative[4] ?? [];
   const totalTarget = targets[12] ?? 0;
 
   const localActiveClubs = useMemo(() => clubs.filter(c => c.active).length, [clubs]);
@@ -382,7 +392,7 @@ export default function ClstrDashboard() {
             isLive={metrics.isLive}
           />
           <MetricCell
-            id="stat-[#C8FF00]"
+            id="stat-points"
             value={totalPoints.toLocaleString()}
             label="Growth Points"
             sub={`${verifiedCount} verified task${verifiedCount !== 1 ? "s" : ""}`}
@@ -412,19 +422,29 @@ export default function ClstrDashboard() {
         />
       </motion.div>
 
-      {/* LEAD / SUPER_ADMIN Review Tab Navigation */}
-      {isLeadOrAdmin && (
-        <motion.div variants={itemV} className="flex gap-2 border-b border-[#222] pb-2">
-          <button
-            onClick={() => setActiveView("missions")}
-            className={`px-4 py-2 text-xs font-mono font-bold uppercase transition-colors border ${
-              activeView === "missions"
-                ? "bg-[#C8FF00] text-black border-[#C8FF00]"
-                : "bg-[#111] text-[#888] border-[#222] hover:text-[#FFF]"
-            }`}
-          >
-            Mission Board
-          </button>
+      {/* Tab Navigation — all users see Mission Board + Sprint Hub; LEAD/ADMIN also see Review Queue */}
+      <motion.div variants={itemV} className="flex gap-2 flex-wrap border-b border-[#222] pb-2">
+        <button
+          onClick={() => setActiveView("missions")}
+          className={`px-4 py-2 text-xs font-mono font-bold uppercase transition-colors border ${
+            activeView === "missions"
+              ? "bg-[#C8FF00] text-black border-[#C8FF00]"
+              : "bg-[#111] text-[#888] border-[#222] hover:text-[#FFF]"
+          }`}
+        >
+          Mission Board
+        </button>
+        <button
+          onClick={() => setActiveView("sprint")}
+          className={`px-4 py-2 text-xs font-mono font-bold uppercase transition-colors border ${
+            activeView === "sprint"
+              ? "bg-[#C8FF00] text-black border-[#C8FF00]"
+              : "bg-[#111] text-[#888] border-[#222] hover:text-[#FFF]"
+          }`}
+        >
+          Sprint Hub
+        </button>
+        {isLeadOrAdmin && (
           <button
             onClick={() => setActiveView("review")}
             className={`px-4 py-2 text-xs font-mono font-bold uppercase transition-colors border ${
@@ -433,15 +453,59 @@ export default function ClstrDashboard() {
                 : "bg-[#111] text-[#888] border-[#222] hover:text-[#FFF]"
             }`}
           >
-            Team Submissions Queue
+            Team Queue
           </button>
-        </motion.div>
-      )}
+        )}
+      </motion.div>
 
       {/* Main View Area */}
       <motion.div variants={itemV}>
         {activeView === "review" && isLeadOrAdmin ? (
           <ReviewQueue />
+        ) : activeView === "sprint" ? (
+          <div className="space-y-4">
+            {/* Sprint Hub sub-tabs */}
+            <div className="flex gap-1.5 flex-wrap">
+              {(
+                [
+                  { id: "weekplan",   label: "Week Plan" },
+                  { id: "reels",      label: "Reels" },
+                  { id: "clubs",      label: "Clubs" },
+                  { id: "report",     label: "Report" },
+                  { id: "milestones", label: "Milestones" },
+                ] as const
+              ).map(({ id, label }) => (
+                <button
+                  key={id}
+                  onClick={() => setSprintTab(id)}
+                  className={`px-3 py-1.5 text-[10px] font-mono font-bold uppercase tracking-[0.08em] transition-colors border ${
+                    sprintTab === id
+                      ? "bg-[#C8FF00]/10 text-[#C8FF00] border-[#C8FF00]/30"
+                      : "bg-[#111] text-[#555] border-[#1A1A1A] hover:text-[#F0F0F0]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Sprint Hub panel */}
+            <Suspense
+              fallback={
+                <div className="border border-dashed border-[#222] p-8 text-center bg-[#0A0A0A]">
+                  <p className="text-[11px] font-mono text-[#555] uppercase tracking-[0.1em]">Loading…</p>
+                </div>
+              }
+            >
+              <div className="border border-[#1A1A1A] bg-[#111] rounded-none overflow-hidden">
+                {sprintTab === "weekplan"   && <WeekPlan />}
+                {sprintTab === "reels"      && <ReelTracker />}
+                {sprintTab === "clubs"      && <ClubOnboardingTracker />}
+                {sprintTab === "report"     && <WeeklyReportPanel />}
+                {sprintTab === "milestones" && <MilestoneTracker />}
+              </div>
+            </Suspense>
+          </div>
         ) : (
           <Suspense
             fallback={
@@ -457,3 +521,4 @@ export default function ClstrDashboard() {
     </motion.div>
   );
 }
+

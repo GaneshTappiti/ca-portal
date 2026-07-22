@@ -207,7 +207,7 @@ export function useNotificationStore(userId: string) {
 
   useEffect(() => {
     if (!userId || isMockId(userId)) return;
-    const channel = subscribeToNotifications(userId, () => {
+    const channel = subscribeToNotifications(userId, (_notification) => {
       qc.invalidateQueries({ queryKey: QueryKeys.notifications(userId) });
     });
     return () => { supabase.removeChannel(channel); };
@@ -287,7 +287,9 @@ export function useTeamStore(teamId: string, leadId: string) {
 
 // ─── 90-Day Plan Store ─────────────────────────────────────────────────────────
 
-export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
+export function usePlanStore(userId: string, teamId: string, tier: number = 4) {
+  // Clamp tier to valid range 1-4
+  const safeTier = ([1, 2, 3, 4].includes(tier) ? tier : 4) as 1 | 2 | 3 | 4;
   const qc = useQueryClient();
   const isRealUser = !isMockId(userId);
   const isRealTeam = !isMockId(teamId);
@@ -326,7 +328,7 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
   });
 
   const updateClubMutation = useMutation({
-    mutationFn: ({ id, ...data }: Parameters<typeof updateClub>[1] & { id: string }) =>
+    mutationFn: ({ id, ...data }: { id: string; name?: string; domain?: string; presidentName?: string; active?: boolean; eventDetails?: string }) =>
       updateClub(id, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: QueryKeys.clubs(teamId) }),
   });
@@ -356,7 +358,7 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
   }, [campaignStartDate]);
 
   const weeklyCumulativeMap = configData?.weeklyCumulative ?? WEEKLY_CUMULATIVE;
-  const weeklyTargets = weeklyCumulativeMap[tier as 1 | 2 | 3 | 4] ?? weeklyCumulativeMap[4];
+  const weeklyTargets = weeklyCumulativeMap[safeTier] ?? weeklyCumulativeMap[4] ?? [];
   const currentTarget = weeklyTargets[currentWeek - 1] ?? 0;
 
   const clubs = clubsQuery.data ?? [];
@@ -373,7 +375,7 @@ export function usePlanStore(userId: string, teamId: string, tier: number = 1) {
   );
 
   return {
-    tier,
+    tier: safeTier,
     currentWeek,
     weeklyTargets,
     currentTarget,

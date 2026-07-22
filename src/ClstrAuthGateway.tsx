@@ -542,7 +542,7 @@ function LoginForm({ onForgotPassword }: { onForgotPassword: () => void }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 type Screen = "auth" | "success" | "forgot";
-type Tab = "login";
+type Tab = "login" | "signup";
 
 export default function ClstrAuthGateway({ onAuthenticated }: { onAuthenticated: () => void }) {
   const { t } = useTranslation();
@@ -633,21 +633,77 @@ export default function ClstrAuthGateway({ onAuthenticated }: { onAuthenticated:
         >
           <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#C8FF00]" />
 
+          {/* Tab switcher */}
+          <div className="flex border-b border-[#222]">
+            <button
+              id="tab-login"
+              onClick={() => setTab("login")}
+              className={`flex-1 py-3 text-xs font-mono font-bold uppercase tracking-wider transition-colors ${
+                tab === "login"
+                  ? "text-[#C8FF00] border-b-2 border-[#C8FF00] -mb-px bg-[#111]"
+                  : "text-[#555] hover:text-[#F0F0F0]"
+              }`}
+            >
+              Login
+            </button>
+            <button
+              id="tab-signup"
+              onClick={() => setTab("signup")}
+              className={`flex-1 py-3 text-xs font-mono font-bold uppercase tracking-wider transition-colors ${
+                tab === "signup"
+                  ? "text-[#C8FF00] border-b-2 border-[#C8FF00] -mb-px bg-[#111]"
+                  : "text-[#555] hover:text-[#F0F0F0]"
+              }`}
+            >
+              Sign Up
+            </button>
+          </div>
+
           <div className="p-6 sm:p-8">
-            <div className="mb-6">
-              <h2 className="text-xl font-black text-[#F0F0F0] tracking-tight">
-                {t("auth.portalTitle")}
-              </h2>
-              <p className="text-[11px] text-[#444] font-mono mt-1">
-                {t("auth.portalSubtitle")}
-              </p>
-            </div>
-            <LoginForm onForgotPassword={() => setScreen("forgot")} />
-            <div className="mt-5 pt-4 border-t border-[#1A1A1A] text-center">
-              <p className="text-[10px] text-[#3A3A3A] font-mono leading-relaxed">
-                Access by invitation only · Credentials issued by your admin
-              </p>
-            </div>
+            <AnimatePresence mode="wait">
+              {tab === "login" ? (
+                <motion.div
+                  key="login-form"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                  transition={{ duration: prefersReduced ? 0 : 0.15 }}
+                >
+                  <div className="mb-6">
+                    <h2 className="text-xl font-black text-[#F0F0F0] tracking-tight">
+                      {t("auth.portalTitle")}
+                    </h2>
+                    <p className="text-[11px] text-[#444] font-mono mt-1">
+                      {t("auth.portalSubtitle")}
+                    </p>
+                  </div>
+                  <LoginForm onForgotPassword={() => setScreen("forgot")} />
+                  <div className="mt-5 pt-4 border-t border-[#1A1A1A] text-center">
+                    <p className="text-[10px] text-[#3A3A3A] font-mono leading-relaxed">
+                      Access by invitation only · Credentials issued by your admin
+                    </p>
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="signup-form"
+                  initial={{ opacity: 0, x: 8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: prefersReduced ? 0 : 0.15 }}
+                >
+                  <div className="mb-6">
+                    <h2 className="text-xl font-black text-[#F0F0F0] tracking-tight">
+                      Create Account
+                    </h2>
+                    <p className="text-[11px] text-[#444] font-mono mt-1">
+                      Have an invite code? Join your team now.
+                    </p>
+                  </div>
+                  <SignUpForm onSuccess={() => setScreen("success")} />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </motion.div>
       </div>

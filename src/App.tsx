@@ -64,8 +64,8 @@ const LanguageSelector = memo(function LanguageSelector() {
 // ─── Week ticker (signature element) ─────────────────────────────────────────
 
 function WeekTicker({ userId, teamId, tier }: { userId: string; teamId: string; tier: number }) {
-  const { currentWeek, weeklyCumulative } = usePlanStore(userId, teamId, tier as 1|2|3|4);
-  const targets = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4];
+  const { currentWeek, weeklyCumulative, tier: safeTier } = usePlanStore(userId, teamId, tier);
+  const targets = weeklyCumulative[safeTier] ?? weeklyCumulative[4] ?? [];
   const totalWeeks = 13;
   const pct = Math.min((currentWeek / totalWeeks) * 100, 100);
 
@@ -142,7 +142,7 @@ const AppHeader = memo(function AppHeader({ onLogout }: { onLogout: () => void }
           {/* Right controls */}
           <div className="flex items-center gap-1">
             <LanguageSelector />
-            <NotificationCenter userEmail={user.email} />
+            <NotificationCenter />
             <button
               id="logout-button"
               onClick={onLogout}
@@ -196,11 +196,7 @@ function AuthenticatedApp({ onLogout }: { onLogout: () => void }) {
             <>
               <ClstrDashboard />
               <div className="border-t border-[#1A1A1A]" />
-              <TeamManager
-                role={user.role}
-                userEmail={user.email}
-                leadEmail={user.role === "LEAD" ? user.email : (user.teamId ? "" : "lead@clstr.in")}
-              />
+              <TeamManager role={user.role} />
             </>
           )}
         </Suspense>

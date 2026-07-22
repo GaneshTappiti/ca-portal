@@ -148,14 +148,10 @@ const NotifRow = memo(function NotifRow({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-interface NotificationCenterProps {
-  userEmail: string;
-}
-
-export default function NotificationCenter({ userEmail }: NotificationCenterProps) {
+export default function NotificationCenter() {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { notifications, unreadCount, markRead, markAllRead } = useNotificationStore(user?.id ?? userEmail);
+  const { notifications, unreadCount, markRead, markAllRead } = useNotificationStore(user?.id ?? "");
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);

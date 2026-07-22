@@ -107,8 +107,6 @@ const MemberRow = memo(function MemberRow({
 
 interface TeamManagerProps {
   role: AuthRole;
-  userEmail: string;
-  leadEmail: string;
 }
 
 export default function TeamManager({ role }: TeamManagerProps) {

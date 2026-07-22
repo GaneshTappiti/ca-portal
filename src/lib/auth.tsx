@@ -63,7 +63,7 @@ export interface AuthContextValue {
 async function loadProfile(userId: string): Promise<AuthUser | null> {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, college, role, team_id, total_points, tier")
+    .select("id, full_name, college, role, team_id, total_points, tier, ca_id")
     .eq("id", userId)
     .single();
 
@@ -82,6 +82,7 @@ async function loadProfile(userId: string): Promise<AuthUser | null> {
     teamId: data.team_id,
     totalPoints: data.total_points,
     tier: data.tier ?? 4,
+    caId: data.ca_id ?? undefined,
   };
 }
 
@@ -193,7 +194,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // 2. Create the auth account
+      // 2. Create the auth account (include invite code in metadata for the server-side trigger)
       const { data, error } = await supabase.auth.signUp({
         email: params.email.trim().toLowerCase(),
         password: params.password,
@@ -201,6 +202,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           data: {
             full_name: params.fullName,
             college: params.college,
+            // Server trigger (handle_new_user) reads this to auto-join team
+            invite_code: params.inviteCode ? params.inviteCode.trim().toUpperCase() : null,
           },
         },
       });
@@ -212,14 +215,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: error.message };
       }
 
-      // 3. Redeem invite code via SECURITY DEFINER RPC (bypasses RLS)
-      if (params.inviteCode && data.user) {
+      // 3. Redeem invite code via RPC only when a session is immediately available
+      // (email confirmation disabled). If email confirmation is enabled, the DB
+      // trigger reads the invite_code from user_metadata on the first SIGNED_IN event.
+      if (params.inviteCode && data.session?.user) {
         const { error: rpcError } = await supabase.rpc("redeem_team_invite", {
           p_code: params.inviteCode.trim().toUpperCase(),
         });
 
         if (rpcError) {
-          console.error("Failed to redeem invite code via RPC:", rpcError);
+          // Non-fatal: server trigger will handle it on first login
+          console.warn("[Auth] Invite redemption deferred to first login:", rpcError.message);
         }
       }
 

@@ -662,7 +662,7 @@ export default function MissionBoard() {
 
   const allItems = useMemo((): MissionItem[] => {
     const items: MissionItem[] = [];
-    const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+    const targets = weeklyCumulative[tier] ?? weeklyCumulative[4] ?? [];
 
     // 1. Reel tasks
     const weekReels = getWeekReels(currentWeek);
@@ -835,7 +835,7 @@ export default function MissionBoard() {
         win: payload.win || payload.notes || "Weekly Report Submitted",
         blocker: payload.blocker || "",
       });
-      showToast(`Week ${item.week} Monday report submitted!`, "success");
+      showToast(`Week ${item.week ?? currentWeek} Monday report submitted!`, "success");
     } else if (item.type === "club") {
       if (item.meta?.club) {
         await updateClub({ id: (item.meta.club as { id: string }).id, active: true });

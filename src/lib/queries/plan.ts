@@ -5,6 +5,14 @@
 
 import { supabase } from "../supabaseClient";
 import type { ReelEntry, ClubEntry, WeeklyReport, ReelType, Tier } from "../types";
+import {
+  WEEKLY_CUMULATIVE,
+  WEEK_NAMES,
+  WEEK_DATES,
+  WEEKLY_REELS,
+  WEEKLY_CLUB_FOCUS,
+  WEEKLY_MILESTONES,
+} from "../types";
 
 // ─── Reels ────────────────────────────────────────────────────────────────────
 
@@ -226,7 +234,21 @@ export async function fetchProgramConfig(): Promise<ProgramConfig> {
     .eq("id", "active")
     .single();
 
-  if (error) throw error;
+  // If the table doesn't exist, no row matches, or any other DB error → fall back
+  // to static constants so the rest of the app continues to work.
+  if (error || !data) {
+    console.warn("[fetchProgramConfig] Falling back to static config:", error?.message ?? "no row");
+    return {
+      campaignStartDate: "2026-07-01T00:00:00Z",
+      tierTargets: {} as Record<Tier, string>,
+      weeklyCumulative: WEEKLY_CUMULATIVE,
+      weekNames: WEEK_NAMES,
+      weekDates: WEEK_DATES,
+      weeklyReels: WEEKLY_REELS,
+      weeklyClubFocus: WEEKLY_CLUB_FOCUS,
+      weeklyMilestones: WEEKLY_MILESTONES,
+    };
+  }
 
   const tierTargets = {} as Record<Tier, string>;
   if (data.tier_targets) {
@@ -243,13 +265,14 @@ export async function fetchProgramConfig(): Promise<ProgramConfig> {
   }
 
   return {
-    campaignStartDate: data.campaign_start_date,
+    campaignStartDate: data.campaign_start_date ?? "2026-07-01T00:00:00Z",
     tierTargets,
-    weeklyCumulative,
-    weekNames: data.week_names,
-    weekDates: data.week_dates,
-    weeklyReels: data.weekly_reels,
-    weeklyClubFocus: data.weekly_club_focus,
-    weeklyMilestones: data.weekly_milestones,
+    weeklyCumulative: Object.keys(weeklyCumulative).length > 0 ? weeklyCumulative : WEEKLY_CUMULATIVE,
+    weekNames: data.week_names ?? WEEK_NAMES,
+    weekDates: data.week_dates ?? WEEK_DATES,
+    weeklyReels: data.weekly_reels ?? WEEKLY_REELS,
+    weeklyClubFocus: data.weekly_club_focus ?? WEEKLY_CLUB_FOCUS,
+    weeklyMilestones: data.weekly_milestones ?? WEEKLY_MILESTONES,
   };
 }
+

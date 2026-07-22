@@ -39,7 +39,7 @@ export default function ReelTracker() {
 
   const allReelTypes: ReelType[] = ["meme", "campus_culture", "student_conversation"];
 
-  const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
+  const targets = weeklyCumulative[tier] ?? weeklyCumulative[4] ?? [];
   const cumTarget = targets[selectedWeek - 1] ?? 0;
 
   return (
