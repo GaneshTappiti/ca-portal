@@ -14,7 +14,7 @@ create table if not exists public.daily_checklist (
 
 alter table public.daily_checklist enable row level security;
 
--- Each user can only read/write their own daily checklist rows.
+drop policy if exists "daily_checklist: own all" on public.daily_checklist;
 create policy "daily_checklist: own all"
   on public.daily_checklist for all
   using (user_id = auth.uid())

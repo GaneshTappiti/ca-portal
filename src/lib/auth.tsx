@@ -176,25 +176,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       college: string;
       inviteCode?: string;
     }): Promise<{ success: boolean; error?: string }> => {
-      // 1. Validate invite code exists (if provided) BEFORE creating account
+      // 1. Validate invite code via RPC (no unauthenticated table access needed)
       if (params.inviteCode) {
-        const { data: invite, error: inviteError } = await supabase
-          .from("invites")
-          .select("code, expires_at, used_by")
-          .eq("code", params.inviteCode.toUpperCase())
-          .is("used_by", null)
-          .single();
+        const { data: validation, error: validationError } = await supabase.rpc(
+          "validate_invite_code",
+          { p_code: params.inviteCode.trim().toUpperCase() }
+        );
 
-        if (inviteError || !invite) {
-          return { success: false, error: "Invalid or already-used invite code." };
-        }
-        if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
-          return { success: false, error: "This invite code has expired." };
+        if (validationError || !validation?.valid) {
+          const reason = !validation?.valid
+            ? validation?.reason === "expired"
+              ? "This invite code has expired."
+              : "Invalid or already-used invite code."
+            : "Could not validate invite code.";
+          return { success: false, error: reason };
         }
       }
 
       // 2. Create the auth account
-      // Role is NOT accepted here — it's set server-side by the trigger
       const { data, error } = await supabase.auth.signUp({
         email: params.email.trim().toLowerCase(),
         password: params.password,
@@ -202,7 +201,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           data: {
             full_name: params.fullName,
             college: params.college,
-            // 'role' intentionally omitted — set by server trigger only
           },
         },
       });
@@ -214,33 +212,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: error.message };
       }
 
-      // 3. Accept the invite code (links user to team) — after account created
+      // 3. Redeem invite code via SECURITY DEFINER RPC (bypasses RLS)
       if (params.inviteCode && data.user) {
-        const { error: acceptErr } = await supabase
-          .from("invites")
-          .update({
-            used_by: data.user.id,
-            used_at: new Date().toISOString(),
-          })
-          .eq("code", params.inviteCode.toUpperCase());
+        const { error: rpcError } = await supabase.rpc("redeem_team_invite", {
+          p_code: params.inviteCode.trim().toUpperCase(),
+        });
 
-        if (acceptErr) {
-          console.error("Failed to mark invite as used:", acceptErr);
-          // Don't fail signup for this — team linking can be retried
-        }
-
-        // Update profile with team_id from invite
-        const { data: invite } = await supabase
-          .from("invites")
-          .select("team_id")
-          .eq("code", params.inviteCode.toUpperCase())
-          .single();
-
-        if (invite?.team_id && data.user) {
-          await supabase
-            .from("profiles")
-            .update({ team_id: invite.team_id })
-            .eq("id", data.user.id);
+        if (rpcError) {
+          console.error("Failed to redeem invite code via RPC:", rpcError);
         }
       }
 

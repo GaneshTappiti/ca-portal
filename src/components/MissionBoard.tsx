@@ -1,8 +1,7 @@
 /**
- * MissionBoard — unified task board
- * Design language: matches ClstrTaskPanel exactly.
- * Sharp edges, bg-[#111] border border-[#222], h-[2px] top accent bars.
- * No rounded-2xl, no gradients, no glassmorphism.
+ * MissionBoard — unified task board with task-specific forms & live status indicators
+ * Design language: Sharp edges, bg-[#111] border border-[#222], h-[2px] top accent bars.
+ * Preserves exact color scheme (#CCFF00, #FF5500, #4488FF, #A855F7, #111).
  */
 
 import {
@@ -45,8 +44,7 @@ interface MissionItem {
   raw?: Task;
 }
 
-// ─── Design tokens (same as TaskCard in ClstrTaskPanel) ───────────────────────
-// Type → accent color for the h-[2px] top bar + points display
+// ─── Design tokens ─────────────────────────────────────────────────────────────
 const TYPE_ACCENT: Record<MissionItem["type"], string> = {
   reel:      "#4488FF",
   report:    "#C8FF00",
@@ -63,15 +61,14 @@ const TYPE_LABEL: Record<MissionItem["type"], string> = {
   task:      "Task",
 };
 
-// Status → accent color (same pattern as TaskCard statusColor)
 function statusAccent(status: MissionItem["status"]): string {
   if (status === "done")    return "#C8FF00";
   if (status === "pending") return "#FF5500";
   if (status === "locked")  return "#2E2E2E";
-  return "#C8FF00"; // open
+  return "#C8FF00";
 }
 
-// ─── Icons (matching ClstrTaskPanel icon style) ────────────────────────────────
+// ─── Icons ────────────────────────────────────────────────────────────────────
 
 function PointsIcon({ color }: { color: string }) {
   return (
@@ -89,23 +86,7 @@ function CloseIcon() {
   );
 }
 
-function CheckCircleIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#C8FF00" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-    </svg>
-  );
-}
-
-function XCircleIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF5500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-    </svg>
-  );
-}
-
-// ─── Toast (identical pattern to ClstrTaskPanel ToastNotification) ─────────────
+// ─── Toast Component ──────────────────────────────────────────────────────────
 
 const ToastNotification = memo(function ToastNotification({
   toast,
@@ -119,43 +100,29 @@ const ToastNotification = memo(function ToastNotification({
   useEffect(() => {
     const t = setTimeout(onDismiss, 4000);
     return () => clearTimeout(t);
-  }, [onDismiss]);
+  }, [toast, onDismiss]);
 
-  const accent = toast.type === "success" ? "#C8FF00" : toast.type === "error" ? "#FF5500" : "#4488FF";
+  const border = toast.type === "error" ? "#FF5500" : "#C8FF00";
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: prefersReduced ? 0 : -20, scale: prefersReduced ? 1 : 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: prefersReduced ? 0 : -20, scale: prefersReduced ? 1 : 0.95 }}
-      transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      onClick={onDismiss}
-      role="alert"
-      aria-live="polite"
-      aria-atomic="true"
-      className="fixed top-6 right-6 z-[60] flex items-center gap-3 px-5 py-3 bg-[#111] border border-[#2E2E2E] shadow-[0_0_60px_rgba(0,0,0,0.5)] cursor-pointer max-w-sm"
+      initial={{ opacity: 0, y: prefersReduced ? 0 : 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: prefersReduced ? 0 : 16 }}
+      className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-[#111] border p-4 shadow-xl"
+      style={{ borderColor: border }}
+      role="status"
     >
-      <div
-        className="w-7 h-7 flex items-center justify-center shrink-0"
-        style={{ backgroundColor: `${accent}11`, border: `1px solid ${accent}22` }}
-        aria-hidden="true"
-      >
-        {toast.type === "success" ? <CheckCircleIcon /> : <XCircleIcon />}
-      </div>
-      <span className="text-sm font-semibold text-[#F0F0F0] pr-2 flex-1">{toast.message}</span>
-      <motion.div
-        className="absolute bottom-0 left-3 right-3 h-[1px]"
-        style={{ backgroundColor: accent }}
-        initial={{ scaleX: 1, transformOrigin: "left" }}
-        animate={{ scaleX: 0, transformOrigin: "left" }}
-        transition={{ duration: 4, ease: "linear" }}
-        aria-hidden="true"
-      />
+      <div className="w-2 h-2 shrink-0" style={{ background: border }} aria-hidden="true" />
+      <span className="text-xs font-semibold text-[#F0F0F0] font-mono">{toast.message}</span>
+      <button onClick={onDismiss} className="ml-2 text-[#555] hover:text-[#FFF]">
+        <CloseIcon />
+      </button>
     </motion.div>
   );
 });
 
-// ─── Submission Modal (same layout as ClstrTaskPanel SubmissionModal) ──────────
+// ─── Task-Specific Submission Form Modal ──────────────────────────────────────
 
 const SubmissionModal = memo(function SubmissionModal({
   item,
@@ -166,18 +133,50 @@ const SubmissionModal = memo(function SubmissionModal({
 }: {
   item: MissionItem;
   onClose: () => void;
-  onSubmit: (proofUrl: string, notes: string) => Promise<void>;
+  onSubmit: (payload: {
+    proofUrl: string;
+    notes: string;
+    reelUrl?: string;
+    postedDate?: string;
+    signups?: number;
+    reelsPosted?: number;
+    clubsActive?: number;
+    win?: string;
+    blocker?: string;
+    clubName?: string;
+    clubDomain?: string;
+    presidentName?: string;
+    eventDetails?: string;
+  }) => Promise<void>;
   triggerRef: React.MutableRefObject<HTMLButtonElement | null>;
   prefersReduced: boolean | null;
 }) {
-  const { t } = useTranslation();
   const { user } = useAuth();
-  const [proofUrl, setProofUrl] = useState("");
-  const [proofError, setProofError] = useState<string | null>(null);
-  const [notes, setNotes] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const titleId = useId();
   const accent = TYPE_ACCENT[item.type];
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Common inputs
+  const [proofUrl, setProofUrl] = useState("");
+  const [notes, setNotes] = useState("");
+
+  // Reel-specific inputs
+  const [reelUrl, setReelUrl] = useState("");
+  const [postedDate, setPostedDate] = useState(new Date().toISOString().split("T")[0]);
+
+  // Report-specific inputs
+  const [signups, setSignups] = useState(0);
+  const [reelsPostedCount, setReelsPostedCount] = useState(3);
+  const [clubsActiveCount, setClubsActiveCount] = useState(1);
+  const [win, setWin] = useState("");
+  const [blocker, setBlocker] = useState("");
+
+  // Club-specific inputs
+  const [clubName, setClubName] = useState("");
+  const [clubDomain, setClubDomain] = useState("Technical & Coding");
+  const [presidentName, setPresidentName] = useState("");
+  const [eventDetails, setEventDetails] = useState("");
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -188,12 +187,54 @@ const SubmissionModal = memo(function SubmissionModal({
   }, [onClose, triggerRef]);
 
   const handleSubmit = useCallback(async () => {
-    if (!proofUrl) { setProofError("Proof file is required."); return; }
+    setFormError(null);
+
+    // Validation per task type
+    if (item.type === "reel") {
+      if (!reelUrl.trim() && !proofUrl) {
+        setFormError("Platform Reel URL or screenshot proof is required.");
+        return;
+      }
+    } else if (item.type === "report") {
+      if (!win.trim()) {
+        setFormError("Please state your major win for the week.");
+        return;
+      }
+    } else if (item.type === "club") {
+      if (!clubName.trim()) {
+        setFormError("Club name is required.");
+        return;
+      }
+    } else if (item.type === "task") {
+      if (!proofUrl && !notes.trim()) {
+        setFormError("Proof URL or screenshot file is required.");
+        return;
+      }
+    }
+
     setSubmitting(true);
-    try { await onSubmit(proofUrl, notes.trim()); }
-    catch { setProofError("Submission failed. Try again."); }
-    finally { setSubmitting(false); }
-  }, [proofUrl, notes, onSubmit]);
+    try {
+      await onSubmit({
+        proofUrl: proofUrl || reelUrl,
+        notes: notes.trim(),
+        reelUrl: reelUrl.trim(),
+        postedDate,
+        signups,
+        reelsPosted: reelsPostedCount,
+        clubsActive: clubsActiveCount,
+        win: win.trim(),
+        blocker: blocker.trim(),
+        clubName: clubName.trim(),
+        clubDomain,
+        presidentName: presidentName.trim(),
+        eventDetails: eventDetails.trim(),
+      });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Submission failed. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [item.type, proofUrl, notes, reelUrl, postedDate, signups, reelsPostedCount, clubsActiveCount, win, blocker, clubName, clubDomain, presidentName, eventDetails, onSubmit]);
 
   return (
     <FocusTrap
@@ -212,29 +253,27 @@ const SubmissionModal = memo(function SubmissionModal({
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        {/* Backdrop */}
         <motion.div
           className="absolute inset-0 bg-[#000]/75 backdrop-blur-sm"
           onClick={() => { onClose(); triggerRef.current?.focus(); }}
           aria-hidden="true"
         />
 
-        {/* Panel — matches ClstrTaskPanel modal: sharp, #111, border #2E2E2E */}
         <motion.div
           initial={{ opacity: 0, scale: prefersReduced ? 1 : 0.97, y: prefersReduced ? 0 : 24 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: prefersReduced ? 1 : 0.97, y: prefersReduced ? 0 : 24 }}
           transition={{ type: "spring", stiffness: 350, damping: 30 }}
-          className="relative w-full max-w-lg bg-[#111] border border-[#2E2E2E] p-6 sm:p-8"
+          className="relative w-full max-w-lg bg-[#111] border border-[#2E2E2E] p-6 sm:p-8 max-h-[90vh] overflow-y-auto"
         >
-          {/* Top accent bar — type color */}
           <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: accent }} aria-hidden="true" />
 
-          {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex flex-col gap-1">
-              <h2 id={titleId} className="text-base font-bold text-[#F0F0F0] tracking-tight">Submit Task</h2>
-              <p className="text-[11px] text-[#555] font-mono mt-0.5">{item.title}</p>
+              <span className="text-[10px] font-mono uppercase tracking-wider text-[#888]">
+                {TYPE_LABEL[item.type]} Submission Form
+              </span>
+              <h2 id={titleId} className="text-base font-bold text-[#F0F0F0] tracking-tight">{item.title}</h2>
             </div>
             <div className="flex items-center gap-3">
               <span
@@ -247,7 +286,7 @@ const SubmissionModal = memo(function SubmissionModal({
               <button
                 onClick={() => { onClose(); triggerRef.current?.focus(); }}
                 aria-label="Close modal"
-                className="p-1.5 hover:bg-[#1A1A1A] transition-colors text-[#444] hover:text-[#F0F0F0] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]"
+                className="p-1.5 hover:bg-[#1A1A1A] transition-colors text-[#444] hover:text-[#F0F0F0]"
               >
                 <CloseIcon />
               </button>
@@ -255,63 +294,218 @@ const SubmissionModal = memo(function SubmissionModal({
           </div>
 
           <div className="space-y-4">
-            {/* Drop zone */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-[#666] uppercase tracking-wider">Proof / Screenshot</label>
-              <DropZone
-                onFileAccepted={(url) => { setProofUrl(url); setProofError(null); }}
-                onError={(msg) => setProofError(msg)}
-                userId={user?.id ?? ""}
-                taskDefId={item.raw?.taskDefId ?? item.id}
-              />
-              {proofError && (
-                <p role="alert" className="text-xs text-[#FF5500] font-medium">{proofError}</p>
-              )}
-            </div>
+            {/* Reel Submission Form */}
+            {item.type === "reel" && (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">
+                    Reel Link (Instagram / TikTok URL)
+                  </label>
+                  <input
+                    type="url"
+                    value={reelUrl}
+                    onChange={(e) => setReelUrl(e.target.value)}
+                    placeholder="https://instagram.com/reel/..."
+                    className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono focus:outline-none focus:border-[#4488FF]/50"
+                  />
+                </div>
 
-            {/* Notes */}
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="mission-notes" className="text-xs font-semibold text-[#666] uppercase tracking-wider">
-                Notes <span className="text-[#333] normal-case font-normal">(optional)</span>
-              </label>
-              <textarea
-                id="mission-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Add context, links, or details..."
-                rows={3}
-                maxLength={1000}
-                className="w-full px-4 py-2.5 bg-[#0A0A0A] border border-[#222] text-sm text-[#F0F0F0] placeholder-[#2E2E2E] focus:outline-none focus:border-[#C8FF00]/40 focus:ring-1 focus:ring-[#C8FF00]/20 transition-all resize-none"
-              />
-              <p className="text-[10px] text-[#444] text-right">{notes.length}/1000</p>
-            </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Posted Date</label>
+                  <input
+                    type="date"
+                    value={postedDate}
+                    onChange={(e) => setPostedDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono focus:outline-none focus:border-[#4488FF]/50"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">
+                    Optional Screenshot Proof
+                  </label>
+                  <DropZone
+                    onFileAccepted={(url) => { setProofUrl(url); setFormError(null); }}
+                    onError={(msg) => setFormError(msg)}
+                    userId={user?.id ?? ""}
+                    taskDefId={item.id}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Weekly Report Form */}
+            {item.type === "report" && (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-semibold text-[#888] uppercase">New Signups</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={signups}
+                      onChange={(e) => setSignups(Number(e.target.value))}
+                      className="px-2.5 py-1.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-semibold text-[#888] uppercase">Reels Posted</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={reelsPostedCount}
+                      onChange={(e) => setReelsPostedCount(Number(e.target.value))}
+                      className="px-2.5 py-1.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-semibold text-[#888] uppercase">Active Clubs</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={clubsActiveCount}
+                      onChange={(e) => setClubsActiveCount(Number(e.target.value))}
+                      className="px-2.5 py-1.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Major Win</label>
+                  <textarea
+                    value={win}
+                    onChange={(e) => setWin(e.target.value)}
+                    placeholder="Key win or achievement this week..."
+                    rows={2}
+                    className="w-full p-2.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Blocker / Help Needed</label>
+                  <textarea
+                    value={blocker}
+                    onChange={(e) => setBlocker(e.target.value)}
+                    placeholder="Any blockers or support required..."
+                    rows={2}
+                    className="w-full p-2.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Club Onboarding Form */}
+            {item.type === "club" && (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Club Name</label>
+                  <input
+                    type="text"
+                    value={clubName}
+                    onChange={(e) => setClubName(e.target.value)}
+                    placeholder="e.g. ACM Student Chapter"
+                    className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Category / Domain</label>
+                    <select
+                      value={clubDomain}
+                      onChange={(e) => setClubDomain(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                    >
+                      <option>Technical & Coding</option>
+                      <option>Cultural & Arts</option>
+                      <option>Sports & Gaming</option>
+                      <option>Entrepreneurship & E-Cell</option>
+                      <option>Literary & Debating</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">President / Lead</label>
+                    <input
+                      type="text"
+                      value={presidentName}
+                      onChange={(e) => setPresidentName(e.target.value)}
+                      placeholder="President Full Name"
+                      className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">First Event Details</label>
+                  <textarea
+                    value={eventDetails}
+                    onChange={(e) => setEventDetails(e.target.value)}
+                    placeholder="Details on their first event posted on Clstr..."
+                    rows={2}
+                    className="w-full p-2.5 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Proof Asset / Link</label>
+                  <DropZone
+                    onFileAccepted={(url) => { setProofUrl(url); setFormError(null); }}
+                    onError={(msg) => setFormError(msg)}
+                    userId={user?.id ?? ""}
+                    taskDefId={item.id}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Standard Task Form */}
+            {item.type === "task" && (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-[#888] uppercase tracking-wider">Proof File or Link</label>
+                  <DropZone
+                    onFileAccepted={(url) => { setProofUrl(url); setFormError(null); }}
+                    onError={(msg) => setFormError(msg)}
+                    userId={user?.id ?? ""}
+                    taskDefId={item.raw?.taskDefId ?? item.id}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="mission-notes" className="text-xs font-semibold text-[#888] uppercase tracking-wider">
+                    Execution Notes
+                  </label>
+                  <textarea
+                    id="mission-notes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Add context, details, or direct links..."
+                    rows={3}
+                    className="w-full p-3 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono resize-none"
+                  />
+                </div>
+              </>
+            )}
+
+            {formError && (
+              <p role="alert" className="text-xs text-[#FF5500] font-bold">{formError}</p>
+            )}
           </div>
 
-          {/* Actions */}
           <div className="flex items-center gap-3 mt-6">
             <button
               onClick={() => { onClose(); triggerRef.current?.focus(); }}
-              className="flex-1 px-4 py-2.5 rounded-md border border-[#222] text-sm font-semibold text-[#555] transition-all hover:text-[#F0F0F0] hover:border-[#444] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#444]"
+              className="flex-1 px-4 py-2.5 rounded border border-[#222] text-xs font-semibold text-[#888] hover:text-[#FFF]"
             >
               Cancel
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!proofUrl || submitting}
-              className="flex-1 px-4 py-2.5 rounded-md text-sm font-black tracking-tight transition-all hover:opacity-90 active:scale-[0.97] disabled:opacity-25 disabled:cursor-not-allowed flex items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-1"
-              style={{ background: accent, color: accent === "#C8FF00" || accent === "#A855F7" ? "#000" : "#000", outline: `1px solid ${accent}` }}
+              disabled={submitting}
+              className="flex-1 px-4 py-2.5 rounded text-xs font-bold text-black flex items-center justify-center gap-2"
+              style={{ background: accent }}
             >
-              {submitting ? (
-                <>
-                  <motion.span
-                    className="inline-block w-4 h-4 border-2 border-[#000] border-t-transparent rounded-full"
-                    animate={prefersReduced ? {} : { rotate: 360 }}
-                    transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
-                    aria-hidden="true"
-                  />
-                  Submitting…
-                </>
-              ) : "Submit Task"}
+              {submitting ? "Submitting…" : "Submit Task"}
             </button>
           </div>
         </motion.div>
@@ -320,12 +514,7 @@ const SubmissionModal = memo(function SubmissionModal({
   );
 });
 
-// ─── Mission Card ──────────────────────────────────────────────────────────────
-// Design matches TaskCard in ClstrTaskPanel exactly:
-// - bg-[#111] border border-[#222]
-// - h-[2px] top accent bar (type color, not status)
-// - sharp corners throughout
-// - lime CTA button matching TaskCard execute button
+// ─── Mission Card Component ────────────────────────────────────────────────────
 
 const MissionCard = memo(function MissionCard({
   item,
@@ -342,66 +531,48 @@ const MissionCard = memo(function MissionCard({
   const label = TYPE_LABEL[item.type];
 
   return (
-    <div
-      className="bg-[#111] border border-[#222] rounded-2xl flex flex-col gap-0 relative overflow-hidden"
-      aria-label={`${item.title}, ${item.maxPoints} points, ${item.status}`}
-    >
+    <div className="bg-[#111] border border-[#222] flex flex-col justify-between relative overflow-hidden p-4 space-y-3">
+      <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: accent }} aria-hidden="true" />
 
-      <div className="p-4 flex flex-col gap-3">
-        {/* Row 1: title + type chip */}
+      <div className="space-y-2">
         <div className="flex items-start justify-between gap-2">
           <h3 className="text-sm font-bold text-[#F0F0F0] leading-snug flex-1">{item.title}</h3>
           <span
             className="text-[9px] font-black uppercase tracking-[0.1em] px-1.5 py-0.5 shrink-0"
-            style={{ color: accent, border: `1px solid ${accent}25`, background: `${accent}08` }}
+            style={{ color: accent, border: `1px solid ${accent}30`, background: `${accent}08` }}
           >
             {label}
           </span>
         </div>
 
-        {/* Description — muted, matches task.description pattern */}
         {item.description && (
-          <p className="text-[10px] text-[#555] leading-relaxed line-clamp-2">{item.description}</p>
+          <p className="text-[11px] text-[#666] leading-relaxed line-clamp-2">{item.description}</p>
         )}
+      </div>
 
-        {/* Row 2: points + status */}
-        <div className="flex items-center gap-2">
+      <div className="space-y-3 pt-2">
+        <div className="flex items-center justify-between">
           <div
-            className="flex items-center gap-1 px-2 py-0.5 border"
-            style={{ borderColor: `${accent}25`, background: `${accent}06` }}
+            className="flex items-center gap-1 px-2 py-0.5 border text-[11px] font-black tabular-nums"
+            style={{ borderColor: `${accent}25`, background: `${accent}06`, color: accent }}
           >
             <PointsIcon color={accent} />
-            <span className="text-[11px] font-black tabular-nums" style={{ color: accent }}>
-              +{item.maxPoints}
-            </span>
+            +{item.maxPoints}
           </div>
-          {item.week && (
-            <span className="text-[9px] font-mono text-[#3A3A3A] uppercase tracking-wider">
-              Wk {item.week}
-            </span>
-          )}
-          {item.status !== "open" && (
-            <span
-              className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.1em]"
-              style={{ color: sc, border: `1px solid ${sc}30` }}
-            >
-              {item.status}
-            </span>
-          )}
-          {item.status === "done" && item.points > 0 && (
-            <span className="text-[9px] font-mono text-[#C8FF00] tabular-nums ml-auto">
-              {item.points}/{item.maxPoints}
-            </span>
-          )}
+
+          <span
+            className="px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.1em] border"
+            style={{ color: sc, borderColor: `${sc}30` }}
+          >
+            {item.status}
+          </span>
         </div>
 
-        {/* CTA — small curve (rounded-md) */}
         <button
           ref={triggerRef}
           onClick={(e) => { e.stopPropagation(); onExecute(item, triggerRef); }}
           disabled={!isActionable}
-          className="w-full px-4 py-2 rounded-md bg-[#C8FF00] text-[#000] text-[11px] font-black tracking-tight transition-all duration-200 hover:opacity-90 active:scale-[0.97] disabled:opacity-20 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#C8FF00]"
-          aria-label={`Submit task: ${item.title}`}
+          className="w-full px-4 py-2 bg-[#C8FF00] hover:bg-[#b5e600] text-black text-[11px] font-black tracking-tight transition-all disabled:opacity-20 disabled:cursor-not-allowed"
         >
           {item.status === "done"    ? "Scored ✓" :
            item.status === "pending" ? "Under Review" :
@@ -413,9 +584,7 @@ const MissionCard = memo(function MissionCard({
   );
 });
 
-// ScoreStrip removed per user request
-
-// ─── Filter bar ────────────────────────────────────────────────────────────────
+// ─── Filter Bar Component ──────────────────────────────────────────────────────
 
 const FILTER_LABELS: Record<BoardFilter, string> = {
   all: "All", reel: "Reels", report: "Reports",
@@ -435,14 +604,14 @@ function FilterBar({
         <button
           key={f}
           onClick={() => onChange(f)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.08em] transition-colors whitespace-nowrap border ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.08em] transition-colors border ${
             active === f
               ? "border-[#C8FF00] text-[#000] bg-[#C8FF00]"
-              : "border-[#222] text-[#444] hover:text-[#888] hover:border-[#333] bg-[#111]"
+              : "border-[#222] text-[#666] hover:text-[#F0F0F0] bg-[#111]"
           }`}
         >
           {FILTER_LABELS[f]}
-          <span className={`tabular-nums ml-0.5 ${active === f ? "text-[#000]" : "text-[#2E2E2E]"}`}>
+          <span className={`tabular-nums ml-0.5 ${active === f ? "text-[#000]" : "text-[#444]"}`}>
             {counts[f]}
           </span>
         </button>
@@ -451,7 +620,7 @@ function FilterBar({
   );
 }
 
-// ─── Main MissionBoard ─────────────────────────────────────────────────────────
+// ─── Main MissionBoard Component ──────────────────────────────────────────────
 
 export default function MissionBoard() {
   const { user } = useAuth();
@@ -468,21 +637,21 @@ export default function MissionBoard() {
     weeklyReels,
     weeklyMilestones,
   } = usePlanStore(user?.id ?? "", user?.teamId ?? "", user?.tier ?? 4);
-  const metrics = useMetrics(user?.email ?? "");
 
-  const [filter, setFilter]           = useState<BoardFilter>("all");
+  // FIX: Pass user.id (UUID) as first param, user.campus as second param
+  const metrics = useMetrics(user?.id, user?.campus ?? "raghuinstitute");
+
+  const [filter, setFilter] = useState<BoardFilter>("all");
   const [selectedItem, setSelectedItem] = useState<MissionItem | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [toast, setToast]             = useState<ToastState>(null);
-  const [toastKey, setToastKey]       = useState(0);
+  const [toast, setToast] = useState<ToastState>(null);
+  const [toastKey, setToastKey] = useState(0);
 
   const showToast = useCallback((message: string, type: "success" | "info" | "error") => {
-    setToastKey(k => k + 1);
+    setToastKey((k) => k + 1);
     setToast({ message, type, id: Date.now() });
   }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
 
-  // Allocate per-card trigger refs
   const cardTriggerRefs = useRef<Record<string, React.MutableRefObject<HTMLButtonElement | null>>>({});
   const getTriggerRef = (id: string) => {
     if (!cardTriggerRefs.current[id]) {
@@ -491,20 +660,19 @@ export default function MissionBoard() {
     return cardTriggerRefs.current[id];
   };
 
-  // ── Build all mission items ─────────────────────────────────────────────────
   const allItems = useMemo((): MissionItem[] => {
     const items: MissionItem[] = [];
-    const targets = weeklyCumulative[tier as 1|2|3|4] ?? weeklyCumulative[4] ?? [];
+    const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
 
-    // 1. Reel tasks — current week
+    // 1. Reel tasks
     const weekReels = getWeekReels(currentWeek);
-    const reelDefs: Array<{ type: "meme"|"campus_culture"|"student_conversation"; title: string }> = [
-      { type: "meme",               title: "Meme Reel" },
-      { type: "campus_culture",     title: "Culture / Story Reel" },
-      { type: "student_conversation", title: "Conversation / Branding Reel" },
+    const reelDefs: Array<{ type: "meme" | "campus_culture" | "student_conversation"; title: string }> = [
+      { type: "meme", title: "Meme Reel" },
+      { type: "campus_culture", title: "Culture / Story Reel" },
+      { type: "student_conversation", title: "Conversation Reel" },
     ];
     reelDefs.forEach(({ type, title }) => {
-      const entry = weekReels.find(r => r.type === type);
+      const entry = weekReels.find((r) => r.type === type);
       const desc = type === "meme"
         ? weeklyReels[currentWeek - 1]?.meme
         : type === "campus_culture"
@@ -529,7 +697,7 @@ export default function MissionBoard() {
       id: `report-${currentWeek}`,
       type: "report",
       title: `Week ${currentWeek} — Monday Report`,
-      description: `Submit your Monday progress report for Week ${currentWeek}. Target: ${targets[currentWeek - 1]?.toLocaleString()} users.`,
+      description: `Submit your Monday progress report for Week ${currentWeek}. Target: ${targets[currentWeek - 1]?.toLocaleString()} signups.`,
       points: weekReport?.submitted ? 100 : 0,
       maxPoints: 100,
       status: weekReport?.submitted ? "done" : "open",
@@ -543,7 +711,7 @@ export default function MissionBoard() {
         id: `club-${club.id}`,
         type: "club",
         title: `Club: ${club.name}`,
-        description: `${club.domain} club${club.presidentName ? ` — ${club.presidentName}` : ""}. Submit onboarding proof.`,
+        description: `${club.domain} club${club.presidentName ? ` — ${club.presidentName}` : ""}.`,
         points: club.active ? 75 : 0,
         maxPoints: 75,
         status: club.active ? "done" : "open",
@@ -563,7 +731,7 @@ export default function MissionBoard() {
     }
 
     // 4. Milestones
-    const totalTarget = targets[12];
+    const totalTarget = targets[12] ?? 1000;
     weeklyMilestones.forEach((m) => {
       const userTarget = Math.round(totalTarget * (m.pctTarget / 100));
       const isCompleted = metrics.verifiedUsers >= userTarget;
@@ -572,7 +740,7 @@ export default function MissionBoard() {
         id: `milestone-${m.label}`,
         type: "milestone",
         title: (m.isBonus ? "[BONUS] " : "") + m.name,
-        description: `${m.reward} — Reach ${userTarget.toLocaleString()} users (${m.pctTarget}% of target). Now: ${metrics.verifiedUsers.toLocaleString()}/${userTarget.toLocaleString()}.`,
+        description: `${m.reward} — Target: ${userTarget.toLocaleString()} users. Current: ${metrics.verifiedUsers.toLocaleString()}.`,
         points: isCompleted ? 200 : 0,
         maxPoints: 200,
         status: isCompleted ? "done" : halfway ? "open" : "locked",
@@ -581,7 +749,7 @@ export default function MissionBoard() {
       });
     });
 
-    // 5. Regular tasks from useTaskStore — these come in as Task objects
+    // 5. Standard tasks
     tasks.forEach((task) => {
       items.push({
         id: `task-${task.id}`,
@@ -599,83 +767,109 @@ export default function MissionBoard() {
     });
 
     return items;
-  }, [tasks, currentWeek, tier, clubs, metrics.verifiedUsers, getWeekReels, getWeekReport, activeClubsCount]);
+  }, [tasks, currentWeek, tier, clubs, metrics.verifiedUsers, getWeekReels, getWeekReport, activeClubsCount, weeklyCumulative, weeklyReels, weeklyMilestones]);
 
-  // Filter
   const filtered = useMemo(() => {
     if (filter === "all") return allItems;
-    return allItems.filter(i => i.type === filter);
+    return allItems.filter((i) => i.type === filter);
   }, [allItems, filter]);
 
   const counts = useMemo(() => ({
     all:       allItems.length,
-    reel:      allItems.filter(i => i.type === "reel").length,
-    report:    allItems.filter(i => i.type === "report").length,
-    club:      allItems.filter(i => i.type === "club").length,
-    milestone: allItems.filter(i => i.type === "milestone").length,
-    task:      allItems.filter(i => i.type === "task").length,
+    reel:      allItems.filter((i) => i.type === "reel").length,
+    report:    allItems.filter((i) => i.type === "report").length,
+    club:      allItems.filter((i) => i.type === "club").length,
+    milestone: allItems.filter((i) => i.type === "milestone").length,
+    task:      allItems.filter((i) => i.type === "task").length,
   } as Record<BoardFilter, number>), [allItems]);
 
-  // Handle execute
   const handleExecute = useCallback((item: MissionItem, ref: React.MutableRefObject<HTMLButtonElement | null>) => {
     triggerRef.current = ref.current;
     setSelectedItem(item);
   }, []);
 
-  // Submit
-  const handleSubmit = useCallback(async (proofUrl: string, notes: string) => {
+  const handleSubmit = useCallback(async (payload: {
+    proofUrl: string;
+    notes: string;
+    reelUrl?: string;
+    postedDate?: string;
+    signups?: number;
+    reelsPosted?: number;
+    clubsActive?: number;
+    win?: string;
+    blocker?: string;
+    clubName?: string;
+    clubDomain?: string;
+    presidentName?: string;
+    eventDetails?: string;
+  }) => {
     if (!selectedItem || !user) return;
-    try {
-      const item = selectedItem;
-      if (item.type === "task" && item.raw) {
-        await submitProofMutation({
-          taskDefId: item.raw.taskDefId,
-          userId: user.id,
-          currentStatus: item.raw.status,
-          proofUrl,
-          notes,
-        });
-        broadcastEvent({ type: "TASK_SUBMITTED", taskId: item.raw.id });
-        showToast(`"${item.title}" submitted for review`, "success");
-      } else if (item.type === "reel") {
-        const reelType = item.meta?.reelType as "meme" | "campus_culture" | "student_conversation";
-        await toggleReelPosted({ userId: user.id, week: item.week ?? currentWeek, type: reelType, url: proofUrl });
-        showToast("Reel marked as posted!", "success");
-      } else if (item.type === "report") {
-        await submitReport({
-          userId: user.id,
-          week: item.week ?? currentWeek,
-          signups: 0,
-          reelsPosted: 0,
-          clubsActive: activeClubsCount,
-          win: notes || proofUrl || "Weekly Report Submitted",
-          blocker: "",
-        });
-        showToast(`Week ${item.week} report submitted!`, "success");
-      } else if (item.type === "club") {
-        if (item.meta?.club) {
-          await updateClub({ id: (item.meta.club as { id: string }).id, active: true });
-          showToast("Club marked as active!", "success");
-        } else {
-          await addClub({ teamId: user.teamId ?? "", userId: user.id, name: notes || "New Club", domain: "General" });
-          showToast("Club onboarded!", "success");
-        }
+    const item = selectedItem;
+
+    if (item.type === "task" && item.raw) {
+      await submitProofMutation({
+        taskDefId: item.raw.taskDefId,
+        userId: user.id,
+        currentStatus: item.raw.status,
+        proofUrl: payload.proofUrl,
+        notes: payload.notes,
+      });
+      broadcastEvent({ type: "TASK_SUBMITTED", taskId: item.raw.id });
+      showToast(`"${item.title}" submitted for review`, "success");
+    } else if (item.type === "reel") {
+      const reelType = item.meta?.reelType as "meme" | "campus_culture" | "student_conversation";
+      await toggleReelPosted({
+        userId: user.id,
+        week: item.week ?? currentWeek,
+        type: reelType,
+        url: payload.reelUrl || payload.proofUrl,
+      });
+      showToast("Reel marked as posted!", "success");
+    } else if (item.type === "report") {
+      await submitReport({
+        userId: user.id,
+        week: item.week ?? currentWeek,
+        signups: payload.signups ?? 0,
+        reelsPosted: payload.reelsPosted ?? 3,
+        clubsActive: payload.clubsActive ?? activeClubsCount,
+        win: payload.win || payload.notes || "Weekly Report Submitted",
+        blocker: payload.blocker || "",
+      });
+      showToast(`Week ${item.week} Monday report submitted!`, "success");
+    } else if (item.type === "club") {
+      if (item.meta?.club) {
+        await updateClub({ id: (item.meta.club as { id: string }).id, active: true });
+        showToast("Club marked as active!", "success");
       } else {
-        showToast("Submitted!", "success");
+        await addClub({
+          teamId: user.teamId ?? "",
+          userId: user.id,
+          name: payload.clubName || payload.notes || "New Club",
+          domain: payload.clubDomain || "General",
+          presidentName: payload.presidentName,
+        });
+        showToast("Club onboarded!", "success");
       }
-      setSelectedItem(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Submission failed.";
-      showToast(msg, "error");
     }
-  }, [selectedItem, user, submitProofMutation, toggleReelPosted, submitReport, addClub, updateClub, currentWeek, showToast]);
+
+    setSelectedItem(null);
+  }, [selectedItem, user, submitProofMutation, toggleReelPosted, submitReport, addClub, updateClub, currentWeek, activeClubsCount, showToast]);
 
   return (
     <div className="w-full space-y-4" aria-label="Mission Board">
-      {/* Filter chips */}
+      {/* Live Data & Refresh Indicator */}
+      <div className="flex items-center justify-between text-[10px] font-mono text-[#555] px-1">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${metrics.isLive ? "bg-[#C8FF00]" : "bg-[#FF5500]"}`} />
+          <span>{metrics.isLive ? "Live Stats Connected" : "Live Stats Unavailable"}</span>
+        </div>
+        {metrics.verifiedUsersLastUpdated && (
+          <span>Last synced: {new Date(metrics.verifiedUsersLastUpdated).toLocaleTimeString()}</span>
+        )}
+      </div>
+
       <FilterBar active={filter} onChange={setFilter} counts={counts} />
 
-      {/* Task grid */}
       <AnimatePresence mode="wait">
         {filtered.length === 0 ? (
           <motion.div
@@ -683,9 +877,9 @@ export default function MissionBoard() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="rounded-2xl border border-dashed border-[#222] p-8 text-center bg-[#0A0A0A]"
+            className="border border-dashed border-[#222] p-8 text-center bg-[#0A0A0A]"
           >
-            <p className="text-[11px] font-mono text-[#3A3A3A] uppercase tracking-[0.1em]">No tasks</p>
+            <p className="text-[11px] font-mono text-[#555] uppercase tracking-[0.1em]">No tasks found for filter</p>
           </motion.div>
         ) : (
           <motion.div
@@ -708,7 +902,6 @@ export default function MissionBoard() {
         )}
       </AnimatePresence>
 
-      {/* Submission Modal */}
       <AnimatePresence>
         {selectedItem && (
           <SubmissionModal
@@ -722,13 +915,12 @@ export default function MissionBoard() {
         )}
       </AnimatePresence>
 
-      {/* Toast */}
       <AnimatePresence>
         {toast && (
           <ToastNotification
             key={toastKey}
             toast={toast}
-            onDismiss={dismissToast}
+            onDismiss={() => setToast(null)}
             prefersReduced={prefersReduced}
           />
         )}

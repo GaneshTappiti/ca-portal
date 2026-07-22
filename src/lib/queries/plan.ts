@@ -13,17 +13,17 @@ export async function fetchReels(userId: string): Promise<ReelEntry[]> {
     .from("reels")
     .select("*")
     .eq("user_id", userId)
-    .order("week_number");
+    .order("week");
 
   if (error) throw error;
 
   return (data ?? []).map((r) => ({
     id: r.id,
-    week: r.week_number,
+    week: r.week,
     type: r.reel_type as ReelType,
     posted: r.posted,
     url: r.url,
-    postedAt: r.posted_at,
+    postedAt: r.posted_at ?? r.posted_date,
   }));
 }
 
@@ -33,12 +33,11 @@ export async function toggleReel(params: {
   type: ReelType;
   url?: string;
 }): Promise<void> {
-  // Check if entry exists
   const { data: existing } = await supabase
     .from("reels")
     .select("id, posted")
     .eq("user_id", params.userId)
-    .eq("week_number", params.week)
+    .eq("week", params.week)
     .eq("reel_type", params.type)
     .maybeSingle();
 
@@ -56,7 +55,7 @@ export async function toggleReel(params: {
   } else {
     const { error } = await supabase.from("reels").insert({
       user_id: params.userId,
-      week_number: params.week,
+      week: params.week,
       reel_type: params.type,
       posted: true,
       url: params.url ?? null,
@@ -82,11 +81,11 @@ export async function fetchClubs(teamId: string): Promise<ClubEntry[]> {
     teamId: c.team_id,
     userId: c.user_id,
     name: c.name,
-    domain: c.domain,
+    domain: c.domain ?? c.category,
     presidentName: c.president_name,
-    eventCount: c.event_count,
+    eventCount: c.event_count ?? 0,
     active: c.active,
-    onboardedAt: c.onboarded_at,
+    onboardedAt: c.onboarded_at ?? c.created_at,
     lastPostAt: c.last_post_at,
     createdAt: c.created_at,
   }));
@@ -105,6 +104,7 @@ export async function addClub(params: {
       team_id: params.teamId,
       user_id: params.userId,
       name: params.name,
+      category: params.domain ?? 'General',
       domain: params.domain ?? null,
       president_name: params.presidentName ?? null,
       onboarded_at: new Date().toISOString(),
@@ -119,11 +119,11 @@ export async function addClub(params: {
     teamId: data.team_id,
     userId: data.user_id,
     name: data.name,
-    domain: data.domain,
+    domain: data.domain ?? data.category,
     presidentName: data.president_name,
-    eventCount: data.event_count,
+    eventCount: data.event_count ?? 0,
     active: data.active,
-    onboardedAt: data.onboarded_at,
+    onboardedAt: data.onboarded_at ?? data.created_at,
     lastPostAt: data.last_post_at,
     createdAt: data.created_at,
   };
@@ -142,7 +142,7 @@ export async function updateClub(
 ): Promise<void> {
   const dbUpdates: Record<string, unknown> = {};
   if (updates.name !== undefined) dbUpdates.name = updates.name;
-  if (updates.domain !== undefined) dbUpdates.domain = updates.domain;
+  if (updates.domain !== undefined) { dbUpdates.domain = updates.domain; dbUpdates.category = updates.domain; }
   if (updates.presidentName !== undefined) dbUpdates.president_name = updates.presidentName;
   if (updates.eventCount !== undefined) dbUpdates.event_count = updates.eventCount;
   if (updates.active !== undefined) dbUpdates.active = updates.active;
@@ -164,19 +164,19 @@ export async function fetchReports(userId: string): Promise<WeeklyReport[]> {
     .from("weekly_reports")
     .select("*")
     .eq("user_id", userId)
-    .order("week_number");
+    .order("week");
 
   if (error) throw error;
 
   return (data ?? []).map((r) => ({
     id: r.id,
-    week: r.week_number,
+    week: r.week,
     submitted: true,
     submittedAt: r.submitted_at,
-    signups: r.signups,
+    signups: r.signups_count,
     reelsPosted: r.reels_posted,
-    clubsActive: r.clubs_active,
-    win: r.win ?? "",
+    clubsActive: r.active_clubs,
+    win: r.big_win ?? "",
     blocker: r.blocker ?? "",
   }));
 }
@@ -192,15 +192,15 @@ export async function submitReport(params: {
 }): Promise<void> {
   const { error } = await supabase.from("weekly_reports").upsert({
     user_id: params.userId,
-    week_number: params.week,
-    signups: params.signups,
+    week: params.week,
+    signups_count: params.signups,
     reels_posted: params.reelsPosted,
-    clubs_active: params.clubsActive,
-    win: params.win,
+    active_clubs: params.clubsActive,
+    big_win: params.win,
     blocker: params.blocker,
     submitted_at: new Date().toISOString(),
   }, {
-    onConflict: "user_id,week_number",
+    onConflict: "user_id,week",
   });
 
   if (error) throw error;

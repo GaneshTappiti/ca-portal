@@ -130,6 +130,7 @@ export interface ClubEntry {
   name: string;
   domain?: string;
   presidentName?: string;
+  presidentContact?: string;
   eventCount: number;
   active: boolean;
   onboardedAt?: string;

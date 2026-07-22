@@ -26,7 +26,7 @@ export default function MilestoneTracker() {
     user?.teamId ?? "",
     user?.tier ?? 4
   );
-  const metrics = useMetrics(user?.email ?? "");
+  const metrics = useMetrics(user?.id, user?.campus ?? "raghuinstitute");
 
   const targets = weeklyCumulative[tier as 1 | 2 | 3 | 4] ?? weeklyCumulative[4] ?? [];
   const totalTarget = targets[12] ?? 0;
@@ -35,9 +35,9 @@ export default function MilestoneTracker() {
     return weeklyMilestones.map((m, idx) => {
       const userTarget = Math.round(totalTarget * (m.pctTarget / 100));
       const isCompleted = metrics.verifiedUsers >= userTarget;
-      const pct = Math.min((metrics.verifiedUsers / userTarget) * 100, 100);
+      const pct = Math.min((metrics.verifiedUsers / (userTarget || 1)) * 100, 100);
 
-      return { ...m, userTarget, isCompleted, pct, color: MILESTONE_COLORS[idx] };
+      return { ...m, userTarget, isCompleted, pct, color: MILESTONE_COLORS[idx % MILESTONE_COLORS.length] };
     });
   }, [metrics.verifiedUsers, totalTarget, weeklyMilestones]);
 
@@ -52,7 +52,6 @@ export default function MilestoneTracker() {
 
       <div className="space-y-3">
         {milestones.map((m, idx) => {
-          const currentTarget = targets[Math.min(m.week - 1, 12)];
           return (
             <motion.div
               key={m.label}
@@ -70,8 +69,7 @@ export default function MilestoneTracker() {
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm ${
                     m.isCompleted ? "bg-[#CCFF00] text-black" : "bg-[#1A1A1A] text-[#666]"
                   }`}>
-                    {m.isCompleted && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
-                    {!m.isCompleted && m.label}
+                    {m.isCompleted ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg> : m.label}
                   </div>
                   <div>
                     <h3 className="font-bold text-white text-sm">{m.name}</h3>

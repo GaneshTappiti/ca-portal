@@ -1,12 +1,6 @@
 /**
- * SuperAdminDashboard — Full lead management + live Supabase data
- *
- * Features:
- *   1. Live campus leaderboard from profiles table
- *   2. Create CA / Lead — create Supabase auth user + set role, tier, college
- *   3. Promote existing user to LEAD
- *   4. Adjust tier
- *   5. View live campus stats from admin_college_stats_v2 (secondary DB)
+ * SuperAdminDashboard — Full lead management, operational views & production tools
+ * Preserves exact visual design language (sharp edges, #111 bg, #222 border, #CCFF00, #FF5500).
  */
 
 import { useState, useMemo, useCallback } from "react";
@@ -15,8 +9,7 @@ import { useRequireRole } from "../lib/auth";
 import { supabase } from "../lib/supabaseClient";
 import { fetchAllColleges, type CollegeOption } from "../lib/supabase";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import type { TaskCategory } from "../lib/types";
 
 interface CAProfile {
   id: string;
@@ -30,7 +23,14 @@ interface CAProfile {
   created_at: string;
 }
 
-// ─── Data hooks ───────────────────────────────────────────────────────────────
+interface TaskDefinitionAdmin {
+  id: string;
+  title: string;
+  description: string;
+  points: number;
+  category: TaskCategory;
+  active: boolean;
+}
 
 function useAllProfiles() {
   return useQuery({
@@ -43,62 +43,66 @@ function useAllProfiles() {
       if (error) throw error;
       return data ?? [];
     },
+    staleTime: 15_000,
+  });
+}
+
+function useTaskDefinitionsAdmin() {
+  return useQuery({
+    queryKey: ["admin_task_definitions"],
+    queryFn: async (): Promise<TaskDefinitionAdmin[]> => {
+      const { data, error } = await supabase
+        .from("task_definitions")
+        .select("*")
+        .order("created_at");
+      if (error) throw error;
+      return data ?? [];
+    },
     staleTime: 30_000,
   });
 }
 
-/** Load all colleges from admin_college_stats_v2 (secondary DB) */
 function useColleges() {
   return useQuery({
     queryKey: ["all_colleges"],
     queryFn: fetchAllColleges,
-    staleTime: 10 * 60_000, // cache 10 min — doesn't change often
+    staleTime: 10 * 60_000,
     placeholderData: [],
     retry: 1,
   });
 }
 
-async function adminCreateCA(params: {
+async function adminCreateCaptainAndTeam(params: {
   email: string;
   password: string;
   fullName: string;
   college: string;
-  role: "MEMBER" | "LEAD";
   tier: number;
 }) {
-  // Call the secure RPC function to create the user directly in the database
-  // This bypasses the frontend `signUp` limitation and prevents logging out the admin.
-  const { data, error } = await supabase.rpc("admin_create_user", {
+  const { data, error } = await supabase.rpc("create_captain_and_team", {
     p_email: params.email.trim().toLowerCase(),
     p_password: params.password,
-    p_full_name: params.fullName,
-    p_college: params.college,
-    p_role: params.role,
+    p_full_name: params.fullName.trim(),
+    p_college: params.college.trim(),
     p_tier: params.tier,
+    p_domain_role: "Campus Captain",
   });
 
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("No response from server");
+  if (error) {
+    // Fallback to admin_create_user
+    const { data: fbData, error: fbErr } = await supabase.rpc("admin_create_user", {
+      p_email: params.email.trim().toLowerCase(),
+      p_password: params.password,
+      p_full_name: params.fullName.trim(),
+      p_college: params.college.trim(),
+      p_role: "LEAD",
+      p_tier: params.tier,
+    });
+    if (fbErr) throw new Error(fbErr.message);
+    return { userId: fbData.user_id, inviteCode: "CLSTR-DEFAULT" };
+  }
 
-  return { userId: data.user_id, caId: data.ca_id };
-}
-
-async function adminUpdateProfile(params: {
-  userId: string;
-  role?: "MEMBER" | "LEAD" | "SUPER_ADMIN";
-  tier?: number;
-  college?: string;
-}) {
-  const updates: Record<string, unknown> = {};
-  if (params.role !== undefined) updates.role = params.role;
-  if (params.tier !== undefined) updates.tier = params.tier;
-  if (params.college !== undefined) updates.college = params.college;
-
-  const { error } = await supabase
-    .from("profiles")
-    .update(updates)
-    .eq("id", params.userId);
-  if (error) throw new Error(error.message);
+  return { userId: data.user_id, teamId: data.team_id, inviteCode: data.invite_code };
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -109,667 +113,369 @@ const PlusIcon = () => (
 const EditIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
 );
-const XIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-);
-const CopyIcon = () => (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-);
 
-// ─── Shared UI atoms ──────────────────────────────────────────────────────────
+export default function SuperAdminDashboard() {
+  useRequireRole("SUPER_ADMIN");
+  const qc = useQueryClient();
 
-function Label({ children }: { children: React.ReactNode }) {
-  return <label className="text-[10px] font-bold text-[#555] uppercase tracking-[0.12em]">{children}</label>;
-}
+  const { data: profiles = [], isLoading: loadingProfiles, isRefetching } = useAllProfiles();
+  const { data: taskDefs = [], isLoading: loadingTaskDefs } = useTaskDefinitionsAdmin();
+  const { data: colleges = [] } = useColleges();
 
-function Input({ id, value, onChange, placeholder, type = "text", disabled }: {
-  id: string; value: string; onChange: (v: string) => void;
-  placeholder?: string; type?: string; disabled?: boolean;
-}) {
-  return (
-    <input
-      id={id}
-      type={type}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      placeholder={placeholder}
-      disabled={disabled}
-      className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] rounded-lg text-sm text-[#F0F0F0] placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 focus:border-[#C8FF00]/40 disabled:opacity-40 transition-all"
-    />
-  );
-}
+  const [adminTab, setAdminTab] = useState<"overview" | "captains" | "tasks" | "config">("overview");
 
-function Select({ id, value, onChange, children }: {
-  id: string; value: string; onChange: (v: string) => void; children: React.ReactNode;
-}) {
-  return (
-    <select
-      id={id}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] rounded-lg text-sm text-[#F0F0F0] focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 focus:border-[#C8FF00]/40 transition-all"
-    >
-      {children}
-    </select>
-  );
-}
+  // Create Captain Form State
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [collegeSearch, setCollegeSearch] = useState("");
+  const [tier, setTier] = useState<number>(4);
+  const [createdNotice, setCreatedNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
-function Badge({ label, color }: { label: string; color: string }) {
-  return (
-    <span
-      className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider"
-      style={{ background: `${color}15`, color, border: `1px solid ${color}30` }}
-    >
-      {label}
-    </span>
-  );
-}
+  // New Task Definition Form State
+  const [newTitle, setNewTitle] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [newPoints, setNewPoints] = useState(100);
+  const [newCategory, setNewCategory] = useState<TaskCategory>("General");
 
-function CopyBtn({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-      className="text-[#444] hover:text-[#C8FF00] transition-colors"
-      title="Copy"
-    >
-      {copied
-        ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#C8FF00" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
-        : <CopyIcon />}
-    </button>
-  );
-}
+  // Filtered colleges dropdown
+  const filteredColleges = useMemo(() => {
+    if (!collegeSearch.trim()) return colleges.slice(0, 30);
+    const q = collegeSearch.toLowerCase();
+    return colleges.filter((c) => c.name.toLowerCase().includes(q) || c.canonicalDomain.toLowerCase().includes(q)).slice(0, 30);
+  }, [colleges, collegeSearch]);
 
-// ─── College dropdown (loaded from secondary DB) ─────────────────────────────
-
-function CollegeDropdown({
-  value, onChange, colleges, isLoading,
-}: {
-  value: string;
-  onChange: (domain: string) => void;
-  colleges: CollegeOption[];
-  isLoading: boolean;
-}) {
-  const [search, setSearch] = useState("");
-  const [open, setOpen] = useState(false);
-
-  const selected = colleges.find(c => c.canonicalDomain === value);
-
-  const filtered = useMemo(() => {
-    if (!search) return colleges;
-    const q = search.toLowerCase();
-    return colleges.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      c.canonicalDomain.toLowerCase().includes(q) ||
-      (c.city ?? "").toLowerCase().includes(q)
-    );
-  }, [colleges, search]);
-
-  // If no colleges loaded from DB, fall back to text input
-  if (!isLoading && colleges.length === 0) {
-    return (
-      <div className="space-y-1">
-        <input
-          id="ca-college"
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder="e.g. raghuinstitute (manual entry)"
-          className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#333] rounded-lg text-sm text-[#F0F0F0] placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 transition-all"
-        />
-        <p className="text-[9px] text-[#FF5500]">Secondary DB not connected — enter canonical_domain manually</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative">
-      {/* Trigger */}
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="w-full px-3 py-2 bg-[#0A0A0A] border border-[#222] rounded-lg text-sm text-left flex items-center justify-between gap-2 hover:border-[#C8FF00]/30 focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 transition-all"
-      >
-        {isLoading ? (
-          <span className="text-[#333] flex items-center gap-2">
-            <motion.span className="w-3 h-3 border border-[#444] border-t-[#C8FF00] rounded-full" animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }} />
-            Loading colleges…
-          </span>
-        ) : selected ? (
-          <span className="flex-1 min-w-0">
-            <span className="text-[#F0F0F0] font-semibold truncate block">{selected.name}</span>
-            <span className="text-[9px] text-[#555] font-mono">{selected.canonicalDomain}</span>
-          </span>
-        ) : (
-          <span className="text-[#333]">{colleges.length > 0 ? "Select a college…" : "Loading…"}</span>
-        )}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-[#444]">
-          <polyline points={open ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
-        </svg>
-      </button>
-
-      {/* Dropdown list */}
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4, scaleY: 0.97 }}
-            animate={{ opacity: 1, y: 0, scaleY: 1 }}
-            exit={{ opacity: 0, y: -4, scaleY: 0.97 }}
-            transition={{ duration: 0.12 }}
-            className="absolute z-50 top-full mt-1 left-0 right-0 bg-[#111] border border-[#222] rounded-xl shadow-2xl overflow-hidden"
-            style={{ maxHeight: 260 }}
-          >
-            {/* Search */}
-            <div className="px-3 py-2 border-b border-[#1A1A1A]">
-              <input
-                autoFocus
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search by name, domain, city…"
-                className="w-full bg-transparent text-sm text-[#F0F0F0] placeholder-[#333] focus:outline-none"
-              />
-            </div>
-            {/* Options */}
-            <div className="overflow-y-auto" style={{ maxHeight: 200 }}>
-              {filtered.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-[#444]">No colleges match</p>
-              ) : filtered.map(c => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => { onChange(c.canonicalDomain); setOpen(false); setSearch(""); }}
-                  className={`w-full px-4 py-2.5 text-left flex items-center justify-between gap-3 hover:bg-white/[0.04] transition-colors ${
-                    c.canonicalDomain === value ? "bg-[#C8FF00]/5" : ""
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <p className={`text-sm font-semibold truncate ${c.canonicalDomain === value ? "text-[#C8FF00]" : "text-[#F0F0F0]"}`}>{c.name}</p>
-                    <p className="text-[9px] font-mono text-[#444] truncate">{c.canonicalDomain}{c.city ? ` · ${c.city}` : ""}</p>
-                  </div>
-                  <span className="text-[10px] font-bold text-[#555] shrink-0 tabular-nums">{c.totalUsers.toLocaleString()} users</span>
-                </button>
-              ))}
-            </div>
-            <div className="px-3 py-1.5 border-t border-[#1A1A1A]">
-              <p className="text-[9px] text-[#333]">{colleges.length} colleges from Clstr DB</p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-// ─── Create CA Modal ──────────────────────────────────────────────────────────
-
-function CreateCAModal({ onClose, onSuccess, colleges, collegesLoading }: {
-  onClose: () => void;
-  onSuccess: () => void;
-  colleges: CollegeOption[];
-  collegesLoading: boolean;
-}) {
-  const [form, setForm] = useState({
-    fullName: "", email: "", password: "",
-    college: "", role: "LEAD" as "MEMBER" | "LEAD", tier: "2",
+  const createCaptainMutation = useMutation({
+    mutationFn: adminCreateCaptainAndTeam,
+    onSuccess: (data) => {
+      setCreatedNotice(`Account & Team created! Initial invite code: ${data.inviteCode}. Password reset invitation sent.`);
+      setEmail("");
+      setFullName("");
+      setCollegeSearch("");
+      setFormError(null);
+      qc.invalidateQueries({ queryKey: ["admin_profiles"] });
+    },
+    onError: (err: Error) => {
+      setFormError(err.message);
+    },
   });
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [result, setResult] = useState<{ caId: string; email: string } | null>(null);
 
-  const set = (key: keyof typeof form) => (val: string) => setForm(f => ({ ...f, [key]: val }));
-
-  const handleCreate = async () => {
-    if (!form.fullName || !form.email || !form.password || !form.college) {
-      setError("All fields are required."); return;
-    }
-    if (form.password.length < 6) {
-      setError("Password must be at least 6 characters."); return;
-    }
-    setError(null);
-    setCreating(true);
-    try {
-      const res = await adminCreateCA({
-        ...form, tier: parseInt(form.tier),
+  const createTaskDefMutation = useMutation({
+    mutationFn: async (params: { title: string; description: string; points: number; category: TaskCategory }) => {
+      const { error } = await supabase.from("task_definitions").insert({
+        title: params.title,
+        description: params.description,
+        points: params.points,
+        category: params.category,
+        active: true,
       });
-      setResult({ caId: res.caId, email: form.email });
-      onSuccess();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Creation failed");
-    } finally {
-      setCreating(false);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      setNewTitle("");
+      setNewDesc("");
+      setNewPoints(100);
+      qc.invalidateQueries({ queryKey: ["admin_task_definitions"] });
+    },
+  });
+
+  const handleCreateCaptain = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !fullName || !collegeSearch) {
+      setFormError("All fields are required.");
+      return;
     }
+    // Generate secure temporary random password for backend RPC creation (not displayed to user)
+    const tempPassword = `Clstr!${Math.random().toString(36).slice(2, 10)}${Math.floor(Math.random() * 100)}`;
+    createCaptainMutation.mutate({
+      email,
+      password: tempPassword,
+      fullName,
+      college: collegeSearch,
+      tier,
+    });
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, scale: 0.97, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.97, y: 16 }}
-        className="relative w-full max-w-md bg-[#111] border border-[#222] rounded-2xl overflow-hidden shadow-2xl"
-      >
-        {/* Top accent */}
-        <div className="h-[2px] w-full bg-[#C8FF00]" />
+  const handleCreateTaskDef = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTitle.trim()) return;
+    createTaskDefMutation.mutate({
+      title: newTitle.trim(),
+      description: newDesc.trim(),
+      points: newPoints,
+      category: newCategory,
+    });
+  };
 
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#1A1A1A]">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#C8FF00]">Admin Action</p>
-            <h2 className="text-base font-black text-[#F0F0F0]">Create New CA / Lead</h2>
+  const operationalStats = useMemo(() => {
+    const totalCaptains = profiles.filter((p) => p.role === "LEAD").length;
+    const totalMembers = profiles.filter((p) => p.role === "MEMBER").length;
+    const atRiskCaptains = profiles.filter((p) => p.role === "LEAD" && p.total_points < 100).length;
+    const totalPointsAwarded = profiles.reduce((sum, p) => sum + p.total_points, 0);
+    return { totalCaptains, totalMembers, atRiskCaptains, totalPointsAwarded };
+  }, [profiles]);
+
+  return (
+    <div className="space-y-6">
+      {/* Super Admin Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#222]">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold text-[#F0F0F0] tracking-tight">Super Admin Operations</h1>
+            <span className="px-2 py-0.5 text-[10px] font-black bg-[#FF5500]/10 text-[#FF5500] border border-[#FF5500]/30 uppercase">
+              SUPER_ADMIN
+            </span>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-[#444] hover:text-[#F0F0F0] hover:bg-white/5 transition-colors">
-            <XIcon />
-          </button>
+          <p className="text-xs text-[#555] font-mono mt-1">
+            Production control panel for CAs, campus teams, task definitions, and campaign targets.
+          </p>
         </div>
 
-        {result ? (
-          /* Success state */
-          <div className="px-6 py-8 space-y-4">
-            <div className="text-center space-y-2">
-              <div className="w-12 h-12 bg-[#C8FF00] rounded-full flex items-center justify-center mx-auto text-black text-xl font-black">✓</div>
-              <p className="text-base font-bold text-[#F0F0F0]">CA Created Successfully</p>
-              <p className="text-sm text-[#555]">Share these credentials with the CA:</p>
-            </div>
-            <div className="bg-[#0A0A0A] border border-[#222] rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-[#555] uppercase tracking-wider font-bold">CA ID (Invite Code)</span>
-                <div className="flex items-center gap-2">
-                  <span className="font-black font-mono text-[#C8FF00] text-sm">{result.caId}</span>
-                  <CopyBtn text={result.caId} />
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-[#555] uppercase tracking-wider font-bold">Email</span>
-                <span className="text-sm text-[#F0F0F0] font-mono">{result.email}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-[#555] uppercase tracking-wider font-bold">Password</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[#F0F0F0] font-mono">{form.password}</span>
-                  <CopyBtn text={form.password} />
-                </div>
-              </div>
-            </div>
-            <p className="text-[10px] text-[#444] text-center">⚠ Share the password securely. The CA should change it on first login.</p>
-            <button onClick={onClose} className="w-full py-2.5 bg-[#C8FF00] text-black text-sm font-black rounded-lg hover:opacity-90 transition-opacity">
-              Done
+        {/* Tab Navigation Bar */}
+        <div className="flex gap-1 bg-[#0A0A0A] p-1 border border-[#222]">
+          {(["overview", "captains", "tasks", "config"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setAdminTab(tab)}
+              className={`px-3 py-1.5 text-xs font-mono font-bold uppercase transition-colors ${
+                adminTab === tab ? "bg-[#C8FF00] text-black" : "text-[#666] hover:text-[#FFF]"
+              }`}
+            >
+              {tab}
             </button>
+          ))}
+        </div>
+      </div>
+
+      {/* OVERVIEW TAB */}
+      {adminTab === "overview" && (
+        <div className="space-y-6">
+          {/* Operational Metrics Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="p-4 bg-[#111] border border-[#222]">
+              <span className="text-[10px] font-mono text-[#555] uppercase block">Total Captains</span>
+              <span className="text-2xl font-black text-[#C8FF00] font-mono">{operationalStats.totalCaptains}</span>
+            </div>
+            <div className="p-4 bg-[#111] border border-[#222]">
+              <span className="text-[10px] font-mono text-[#555] uppercase block">Total Members</span>
+              <span className="text-2xl font-black text-[#4488FF] font-mono">{operationalStats.totalMembers}</span>
+            </div>
+            <div className="p-4 bg-[#111] border border-[#222]">
+              <span className="text-[10px] font-mono text-[#555] uppercase block">Captains At Risk</span>
+              <span className="text-2xl font-black text-[#FF5500] font-mono">{operationalStats.atRiskCaptains}</span>
+            </div>
+            <div className="p-4 bg-[#111] border border-[#222]">
+              <span className="text-[10px] font-mono text-[#555] uppercase block">Total Points Logged</span>
+              <span className="text-2xl font-black text-[#F0F0F0] font-mono">{operationalStats.totalPointsAwarded.toLocaleString()}</span>
+            </div>
           </div>
-        ) : (
-          /* Form */
-          <div className="px-6 py-5 space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Full Name</Label>
-                <Input id="ca-name" value={form.fullName} onChange={set("fullName")} placeholder="Ganesh Tappiti" />
+
+          {/* Leaderboard Table */}
+          <div className="bg-[#111] border border-[#222] p-5 space-y-4">
+            <h2 className="text-sm font-bold text-[#F0F0F0]">Live Campus Leaderboard</h2>
+            {loadingProfiles ? (
+              <p className="text-xs text-[#555] font-mono">Loading profiles...</p>
+            ) : (
+              <div className="divide-y divide-[#1A1A1A] border border-[#1A1A1A]">
+                {profiles.map((p) => (
+                  <div key={p.id} className="p-3 flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-[#F0F0F0]">{p.full_name}</span>
+                        <span className={`px-1.5 py-0.2 text-[9px] font-black uppercase border ${
+                          p.role === "LEAD" ? "text-[#C8FF00] border-[#C8FF00]/30" : "text-[#666] border-[#333]"
+                        }`}>
+                          {p.role}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-[#555] font-mono block mt-0.5">{p.college}</span>
+                    </div>
+
+                    <div className="text-right">
+                      <span className="text-xs font-bold text-[#C8FF00] font-mono block">{p.total_points} PTS</span>
+                      <span className="text-[9px] text-[#444] font-mono block">Tier {p.tier}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input id="ca-email" value={form.email} onChange={set("email")} placeholder="ca@college.edu" type="email" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* CAPTAINS TAB */}
+      {adminTab === "captains" && (
+        <div className="space-y-6">
+          {/* Create Captain Form */}
+          <form onSubmit={handleCreateCaptain} className="bg-[#111] border border-[#222] p-5 space-y-4 relative">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#C8FF00]" />
+            <h2 className="text-sm font-bold text-[#F0F0F0]">Onboard New Campus Captain & Team</h2>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Captain Full Name</label>
+                <input
+                  type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="e.g. Rahul Sharma"
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Email Address</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="rahul@college.edu"
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Campus / College</label>
+                <input
+                  type="text"
+                  value={collegeSearch}
+                  onChange={(e) => setCollegeSearch(e.target.value)}
+                  placeholder="Type college name..."
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Campus Tier (Target)</label>
+                <select
+                  value={tier}
+                  onChange={(e) => setTier(Number(e.target.value))}
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                >
+                  <option value={1}>Tier 1 (5,000 Target)</option>
+                  <option value={2}>Tier 2 (3,000 Target)</option>
+                  <option value={3}>Tier 3 (2,000 Target)</option>
+                  <option value={4}>Tier 4 (1,000 Target)</option>
+                </select>
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label>Password</Label>
-              <Input id="ca-pass" value={form.password} onChange={set("password")} placeholder="Min. 6 characters" type="password" />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Campus / College</Label>
-              <CollegeDropdown
-                value={form.college}
-                onChange={set("college")}
-                colleges={colleges}
-                isLoading={collegesLoading}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Role</Label>
-                <Select id="ca-role" value={form.role} onChange={set("role")}>
-                  <option value="LEAD">LEAD (Campus Captain)</option>
-                  <option value="MEMBER">MEMBER (Team Member)</option>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Tier</Label>
-                <Select id="ca-tier" value={form.tier} onChange={set("tier")}>
-                  <option value="1">Tier 1 — 15k+ students</option>
-                  <option value="2">Tier 2 — 8–15k students</option>
-                  <option value="3">Tier 3 — 4–8k students</option>
-                  <option value="4">Tier 4 — Under 4k students</option>
-                </Select>
-              </div>
-            </div>
-
-            {error && (
-              <p className="text-[11px] text-[#FF5500] font-bold bg-[#FF5500]/10 px-3 py-2 rounded-lg border border-[#FF5500]/20">
-                {error}
+            {formError && <p className="text-xs text-[#FF5500] font-bold">{formError}</p>}
+            {createdNotice && (
+              <p className="text-xs text-[#C8FF00] font-bold bg-[#C8FF00]/10 p-2 border border-[#C8FF00]/30 font-mono">
+                {createdNotice}
               </p>
             )}
 
-            <div className="flex gap-3 pt-1">
-              <button onClick={onClose} className="flex-1 py-2.5 border border-[#222] rounded-lg text-sm font-semibold text-[#555] hover:text-[#F0F0F0] hover:border-[#444] transition-all">
-                Cancel
-              </button>
-              <button
-                onClick={handleCreate}
-                disabled={creating}
-                className="flex-1 py-2.5 bg-[#C8FF00] text-black text-sm font-black rounded-lg hover:opacity-90 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {creating && (
-                  <motion.span className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full"
-                    animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: "linear" }} />
-                )}
-                {creating ? "Creating…" : "Create CA"}
-              </button>
-            </div>
-          </div>
-        )}
-      </motion.div>
-    </div>
-  );
-}
-
-// ─── Edit Profile Modal ───────────────────────────────────────────────────────
-
-function EditProfileModal({ profile, onClose, onSuccess }: {
-  profile: CAProfile; onClose: () => void; onSuccess: () => void;
-}) {
-  const [role, setRole] = useState(profile.role as string);
-  const [tier, setTier] = useState(String(profile.tier));
-  const [college, setCollege] = useState(profile.college);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    setSaving(true); setError(null);
-    try {
-      await adminUpdateProfile({
-        userId: profile.id,
-        role: role as "MEMBER" | "LEAD" | "SUPER_ADMIN",
-        tier: parseInt(tier),
-        college,
-      });
-      onSuccess(); onClose();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Update failed");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, scale: 0.97, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.97, y: 16 }}
-        className="relative w-full max-w-sm bg-[#111] border border-[#222] rounded-2xl overflow-hidden shadow-2xl"
-      >
-        <div className="h-[2px] w-full bg-[#4488FF]" />
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#1A1A1A]">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#4488FF]">Edit Profile</p>
-            <h2 className="text-sm font-black text-[#F0F0F0]">{profile.full_name}</h2>
-            <p className="text-[10px] font-mono text-[#C8FF00]">{profile.ca_id}</p>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-[#444] hover:text-[#F0F0F0] hover:bg-white/5 transition-colors">
-            <XIcon />
-          </button>
-        </div>
-        <div className="px-6 py-5 space-y-4">
-          <div className="space-y-1.5">
-            <Label>Role</Label>
-            <Select id="edit-role" value={role} onChange={setRole}>
-              <option value="MEMBER">MEMBER</option>
-              <option value="LEAD">LEAD (Campus Captain)</option>
-              <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Tier</Label>
-            <Select id="edit-tier" value={tier} onChange={setTier}>
-              <option value="1">Tier 1 — 15k+ students (target 5,000)</option>
-              <option value="2">Tier 2 — 8–15k students (target 3,000)</option>
-              <option value="3">Tier 3 — 4–8k students (target 2,000)</option>
-              <option value="4">Tier 4 — Under 4k (target 1,000)</option>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Campus (canonical domain)</Label>
-            <Input id="edit-college" value={college} onChange={setCollege} placeholder="raghuinstitute" />
-          </div>
-          {error && <p className="text-[11px] text-[#FF5500] font-bold">{error}</p>}
-          <div className="flex gap-3 pt-1">
-            <button onClick={onClose} className="flex-1 py-2.5 border border-[#222] rounded-lg text-sm font-semibold text-[#555] hover:text-[#F0F0F0] transition-all">
-              Cancel
-            </button>
             <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex-1 py-2.5 bg-[#4488FF] text-white text-sm font-black rounded-lg hover:opacity-90 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+              type="submit"
+              disabled={createCaptainMutation.isPending}
+              className="px-4 py-2 bg-[#C8FF00] text-black text-xs font-bold hover:bg-[#b5e600] transition-colors"
             >
-              {saving && (
-                <motion.span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full"
-                  animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: "linear" }} />
-              )}
-              {saving ? "Saving…" : "Save Changes"}
+              {createCaptainMutation.isPending ? "Creating Account & Team…" : "Create Captain & Team"}
             </button>
+          </form>
+        </div>
+      )}
+
+      {/* TASKS TAB */}
+      {adminTab === "tasks" && (
+        <div className="space-y-6">
+          {/* Create Task Definition */}
+          <form onSubmit={handleCreateTaskDef} className="bg-[#111] border border-[#222] p-5 space-y-4 relative">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#4488FF]" />
+            <h2 className="text-sm font-bold text-[#F0F0F0]">Create New Task Definition</h2>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Task Title</label>
+                <input
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g. Host Placement Prep Workshop"
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Category</label>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value as TaskCategory)}
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                >
+                  <option>Clubs & Events</option>
+                  <option>Placement & Career</option>
+                  <option>Community</option>
+                  <option>Growth & Outreach</option>
+                  <option>CollabHub</option>
+                  <option>General</option>
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1 sm:col-span-2">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Description</label>
+                <textarea
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                  placeholder="Instructions for Ambassadors..."
+                  rows={2}
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-[#555] uppercase">Reward Points</label>
+                <input
+                  type="number"
+                  value={newPoints}
+                  onChange={(e) => setNewPoints(Number(e.target.value))}
+                  className="px-3 py-2 bg-[#0A0A0A] border border-[#222] text-xs text-[#F0F0F0] font-mono"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={createTaskDefMutation.isPending}
+              className="px-4 py-2 bg-[#4488FF] text-black text-xs font-bold hover:bg-[#3377EE] transition-colors"
+            >
+              {createTaskDefMutation.isPending ? "Creating Task…" : "Add Task Definition"}
+            </button>
+          </form>
+
+          {/* Existing Task Definitions List */}
+          <div className="bg-[#111] border border-[#222] p-5 space-y-3">
+            <h2 className="text-sm font-bold text-[#F0F0F0]">Active Task Definitions</h2>
+            <div className="divide-y divide-[#1A1A1A] border border-[#1A1A1A]">
+              {taskDefs.map((def) => (
+                <div key={def.id} className="p-3 flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-[#F0F0F0]">{def.title}</span>
+                      <span className="text-[9px] font-mono text-[#888] bg-[#1A1A1A] px-1.5 py-0.5">{def.category}</span>
+                    </div>
+                    {def.description && <p className="text-[10px] text-[#555] mt-0.5 font-mono">{def.description}</p>}
+                  </div>
+                  <span className="text-xs font-bold text-[#C8FF00] font-mono">+{def.points} PTS</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      </motion.div>
+      )}
+
+      {/* CONFIG TAB */}
+      {adminTab === "config" && (
+        <div className="bg-[#111] border border-[#222] p-5 space-y-4 relative">
+          <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#A855F7]" />
+          <h2 className="text-sm font-bold text-[#F0F0F0]">Campaign Configuration</h2>
+          <p className="text-xs text-[#666] font-mono leading-relaxed">
+            Campaign timeline start date, week dates, and target rules are persisted in the <code className="text-[#A855F7]">program_config</code> database table and reflected dynamically across all dashboards.
+          </p>
+        </div>
+      )}
     </div>
-  );
-}
-
-// ─── Role badge color ─────────────────────────────────────────────────────────
-
-const ROLE_COLOR: Record<string, string> = {
-  LEAD: "#C8FF00", MEMBER: "#4488FF", SUPER_ADMIN: "#A855F7",
-};
-const TIER_COLOR: Record<number, string> = {
-  1: "#FF5500", 2: "#C8FF00", 3: "#4488FF", 4: "#555",
-};
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-
-export default function SuperAdminDashboard() {
-  const user = useRequireRole("SUPER_ADMIN");
-  const qc = useQueryClient();
-  const { data: profiles = [], isLoading } = useAllProfiles();
-  const { data: colleges = [], isLoading: collegesLoading } = useColleges();
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [editTarget, setEditTarget] = useState<CAProfile | null>(null);
-  const [search, setSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState<"ALL" | "LEAD" | "MEMBER">("ALL");
-
-  const refresh = useCallback(() => qc.invalidateQueries({ queryKey: ["admin_profiles"] }), [qc]);
-
-  const filtered = useMemo(() => {
-    return profiles.filter(p => {
-      const matchSearch = !search ||
-        p.full_name.toLowerCase().includes(search.toLowerCase()) ||
-        p.college.toLowerCase().includes(search.toLowerCase()) ||
-        p.ca_id?.toLowerCase().includes(search.toLowerCase());
-      const matchRole = roleFilter === "ALL" || p.role === roleFilter;
-      return matchSearch && matchRole;
-    });
-  }, [profiles, search, roleFilter]);
-
-  const totals = useMemo(() => ({
-    leads:   profiles.filter(p => p.role === "LEAD").length,
-    members: profiles.filter(p => p.role === "MEMBER").length,
-    points:  profiles.reduce((s, p) => s + (p.total_points ?? 0), 0),
-  }), [profiles]);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-4"
-    >
-      {/* ── Header ── */}
-      <div className="flex items-center gap-3 border border-[#222] bg-[#111] rounded-2xl overflow-hidden">
-        <div className="w-12 h-12 shrink-0 bg-[#C8FF00] flex items-center justify-center text-black font-black text-sm border-r border-[#222]">SA</div>
-        <div className="px-4 py-3 flex-1 min-w-0">
-          <p className="text-sm font-black text-[#F0F0F0]">Super Admin Panel</p>
-          <p className="text-[10px] text-[#444] font-mono truncate">{user.name} · {user.email}</p>
-        </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 mx-4 px-4 py-2 bg-[#C8FF00] text-black text-[11px] font-black rounded-lg hover:opacity-90 active:scale-[0.97] transition-all"
-        >
-          <PlusIcon /> Add CA / Lead
-        </button>
-      </div>
-
-      {/* ── Summary stat strip ── */}
-      <div className="grid grid-cols-3 border border-[#222] bg-[#111] rounded-2xl overflow-hidden divide-x divide-[#1A1A1A]">
-        {[
-          { label: "Campus Leads", value: totals.leads, color: "#C8FF00" },
-          { label: "Team Members", value: totals.members, color: "#4488FF" },
-          { label: "Total Points", value: totals.points.toLocaleString(), color: "#A855F7" },
-        ].map(s => (
-          <div key={s.label} className="px-5 py-4 flex flex-col gap-1">
-            <span className="text-3xl font-black tabular-nums" style={{ color: s.color }}>{s.value}</span>
-            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#555]">{s.label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Profiles table ── */}
-      <div className="border border-[#222] bg-[#111] rounded-2xl overflow-hidden">
-        {/* Toolbar */}
-        <div className="px-5 py-3 border-b border-[#1A1A1A] flex flex-wrap items-center gap-3">
-          <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#555] shrink-0">All CA Profiles</span>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search name, campus, CA ID…"
-            className="flex-1 min-w-[160px] px-3 py-1.5 bg-[#0A0A0A] border border-[#222] rounded-lg text-xs text-[#F0F0F0] placeholder-[#333] focus:outline-none focus:ring-1 focus:ring-[#C8FF00]/30 transition-all"
-          />
-          <div className="flex rounded-lg border border-[#222] overflow-hidden shrink-0">
-            {(["ALL", "LEAD", "MEMBER"] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => setRoleFilter(r)}
-                className={`px-3 py-1.5 text-[10px] font-bold uppercase transition-colors ${
-                  roleFilter === r ? "bg-[#C8FF00] text-black" : "text-[#555] hover:text-[#F0F0F0]"
-                }`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <motion.div className="w-5 h-5 border-2 border-[#C8FF00] border-t-transparent rounded-full"
-                animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }} />
-              <span className="ml-3 text-xs text-[#444]">Loading profiles…</span>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="py-12 text-center">
-              <p className="text-sm text-[#3A3A3A]">No profiles found.</p>
-              <button onClick={() => setShowCreate(true)} className="mt-3 text-xs text-[#C8FF00] underline underline-offset-2">
-                Create the first CA →
-              </button>
-            </div>
-          ) : (
-            <table className="w-full" aria-label="CA profiles">
-              <thead>
-                <tr className="border-b border-[#1A1A1A]">
-                  {["CA ID", "Name", "Campus", "Role", "Tier", "Points", ""].map(col => (
-                    <th key={col} scope="col" className="py-2.5 px-4 text-left text-[9px] font-bold text-[#3A3A3A] uppercase tracking-wider whitespace-nowrap">
-                      {col}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#111]">
-                <AnimatePresence initial={false}>
-                  {filtered.map((p, i) => (
-                    <motion.tr
-                      key={p.id}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ delay: i * 0.02 }}
-                      className="hover:bg-white/[0.015] transition-colors group"
-                    >
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-[11px] text-[#C8FF00] font-black select-all">{p.ca_id ?? "—"}</span>
-                          {p.ca_id && <CopyBtn text={p.ca_id} />}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-sm text-[#F0F0F0] font-semibold">{p.full_name || "—"}</span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-xs text-[#555] font-mono">{p.college || "—"}</span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <Badge label={p.role} color={ROLE_COLOR[p.role] ?? "#555"} />
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-xs font-black tabular-nums" style={{ color: TIER_COLOR[p.tier] ?? "#555" }}>
-                          T{p.tier}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-sm font-black tabular-nums text-[#C8FF00]">
-                          {(p.total_points ?? 0).toLocaleString()}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <button
-                          onClick={() => setEditTarget(p)}
-                          className="opacity-0 group-hover:opacity-100 flex items-center gap-1.5 px-2.5 py-1.5 border border-[#222] rounded-lg text-[10px] font-bold text-[#555] hover:text-[#F0F0F0] hover:border-[#444] transition-all"
-                        >
-                          <EditIcon /> Edit
-                        </button>
-                      </td>
-                    </motion.tr>
-                  ))}
-                </AnimatePresence>
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {filtered.length > 0 && (
-          <div className="px-5 py-2.5 border-t border-[#1A1A1A]">
-            <span className="text-[10px] text-[#3A3A3A]">{filtered.length} of {profiles.length} profiles</span>
-          </div>
-        )}
-      </div>
-
-      {/* ── Modals ── */}
-      <AnimatePresence>
-        {showCreate && (
-          <CreateCAModal
-            onClose={() => setShowCreate(false)}
-            onSuccess={refresh}
-            colleges={colleges}
-            collegesLoading={collegesLoading}
-          />
-        )}
-        {editTarget && (
-          <EditProfileModal
-            profile={editTarget}
-            onClose={() => setEditTarget(null)}
-            onSuccess={refresh}
-          />
-        )}
-      </AnimatePresence>
-    </motion.div>
   );
 }

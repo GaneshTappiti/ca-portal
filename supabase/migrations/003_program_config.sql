@@ -21,10 +21,12 @@ create table if not exists public.program_config (
 alter table public.program_config enable row level security;
 
 -- Policies for program_config
+drop policy if exists "program_config: read all authenticated" on public.program_config;
 create policy "program_config: read all authenticated"
   on public.program_config for select
   using (auth.uid() is not null);
 
+drop policy if exists "program_config: admin all" on public.program_config;
 create policy "program_config: admin all"
   on public.program_config for all
   using (public.is_super_admin());

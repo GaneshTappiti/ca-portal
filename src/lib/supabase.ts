@@ -16,7 +16,6 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 const _url = import.meta.env.VITE_SECONDARY_SUPABASE_URL as string | undefined;
 const _key = import.meta.env.VITE_SECONDARY_SUPABASE_ANON_KEY as string | undefined;
 
-// Debug: log whether the secondary client is configured
 if (import.meta.env.DEV) {
   if (_url && _key) {
     console.info("[SecondaryDB] ✓ Connected to", _url);
@@ -37,7 +36,6 @@ export const supabaseSecondary: SupabaseClient | null =
         },
         global: {
           headers: {
-            // No auth needed — reading from a public anon-accessible table
             apikey: _key,
           },
         },
@@ -66,15 +64,12 @@ export interface CollegeStats extends CollegeOption {
   statsRefreshedAt: string | null;
   firstUserAt: string | null;
   latestUserAt: string | null;
+  isLive: boolean;
+  error?: string;
 }
 
 // ─── Fetch all colleges (for dropdown) ───────────────────────────────────────
 
-/**
- * Fetch all colleges from admin_college_stats_v2 for use in dropdowns.
- * Returns sorted by total_users descending (most active campuses first).
- * Returns [] if secondary DB is not configured or query fails.
- */
 export async function fetchAllColleges(): Promise<CollegeOption[]> {
   if (!supabaseSecondary) {
     console.warn("[SecondaryDB] fetchAllColleges() skipped — client not configured");
@@ -96,11 +91,8 @@ export async function fetchAllColleges(): Promise<CollegeOption[]> {
     }
 
     if (!data || data.length === 0) {
-      console.warn("[SecondaryDB] fetchAllColleges returned 0 rows — table may be empty or RLS blocking");
       return [];
     }
-
-    console.info(`[SecondaryDB] fetchAllColleges: loaded ${data.length} colleges`);
 
     return data.map((row) => ({
       id:              row.id,
@@ -119,37 +111,115 @@ export async function fetchAllColleges(): Promise<CollegeOption[]> {
 // ─── Fetch stats for one campus ──────────────────────────────────────────────
 
 /**
- * Fetch live campus stats from admin_college_stats_v2 by canonical_domain.
- * The canonicalDomain is matched with ilike so "raghuinstitute" matches
- * "raghuinstitute", "clstr.raghuinstitute", etc.
+ * Fetch live campus stats from admin_college_stats_v2 by exact canonical_domain match.
  */
 export async function fetchCollegeStats(
   canonicalDomain: string
 ): Promise<CollegeStats | null> {
-  if (!supabaseSecondary) return null;
+  if (!supabaseSecondary) {
+    return {
+      id: "",
+      name: "",
+      canonicalDomain,
+      city: null,
+      status: null,
+      totalUsers: 0,
+      studentCount: 0,
+      alumniCount: 0,
+      facultyCount: 0,
+      activeUsers7d: 0,
+      clubsCount: 0,
+      eventsCount: 0,
+      postsCount: 0,
+      statsRefreshedAt: null,
+      firstUserAt: null,
+      latestUserAt: null,
+      isLive: false,
+      error: "Secondary Supabase client not configured in environment",
+    };
+  }
 
-  // Strip "clstr." prefix if present
-  const domain = canonicalDomain.replace(/^clstr\./, "").trim();
-  if (!domain) return null;
+  // Strip "clstr." prefix and normalize domain for exact lookup
+  const domain = canonicalDomain.replace(/^clstr\./, "").trim().toLowerCase();
+  if (!domain) {
+    return {
+      id: "",
+      name: "",
+      canonicalDomain,
+      city: null,
+      status: null,
+      totalUsers: 0,
+      studentCount: 0,
+      alumniCount: 0,
+      facultyCount: 0,
+      activeUsers7d: 0,
+      clubsCount: 0,
+      eventsCount: 0,
+      postsCount: 0,
+      statsRefreshedAt: null,
+      firstUserAt: null,
+      latestUserAt: null,
+      isLive: false,
+      error: "Canonical domain name is missing",
+    };
+  }
 
   try {
+    // Match exact canonical_domain to prevent incorrect college statistics matching
     const { data, error } = await supabaseSecondary
       .from("admin_college_stats_v2")
       .select(
         "id, name, canonical_domain, city, status, total_users, student_count, alumni_count, faculty_count, active_users_7d, clubs_count, events_count, posts_count, stats_refreshed_at, first_user_at, latest_user_at"
       )
-      .ilike("canonical_domain", `%${domain}%`)
-      .order("total_users", { ascending: false })
+      .eq("canonical_domain", domain)
       .limit(1)
       .maybeSingle();
 
     if (error) {
       console.error("[SecondaryDB] fetchCollegeStats error:", error.message);
-      return null;
+      return {
+        id: "",
+        name: "",
+        canonicalDomain: domain,
+        city: null,
+        status: null,
+        totalUsers: 0,
+        studentCount: 0,
+        alumniCount: 0,
+        facultyCount: 0,
+        activeUsers7d: 0,
+        clubsCount: 0,
+        eventsCount: 0,
+        postsCount: 0,
+        statsRefreshedAt: null,
+        firstUserAt: null,
+        latestUserAt: null,
+        isLive: false,
+        error: `Database query error: ${error.message}`,
+      };
     }
+
     if (!data) {
-      console.warn(`[SecondaryDB] No college found for domain: "${domain}"`);
-      return null;
+      return {
+        id: "",
+        name: "",
+        canonicalDomain: domain,
+        city: null,
+        status: null,
+        totalUsers: 0,
+        studentCount: 0,
+        alumniCount: 0,
+        facultyCount: 0,
+        activeUsers7d: 0,
+        clubsCount: 0,
+        eventsCount: 0,
+        postsCount: 0,
+        statsRefreshedAt: null,
+        firstUserAt: null,
+        latestUserAt: null,
+        isLive: false,
+        error: `No exact campus record found for domain: "${domain}"`,
+      };
     }
 
     return {
@@ -169,17 +239,36 @@ export async function fetchCollegeStats(
       statsRefreshedAt: data.stats_refreshed_at ?? null,
       firstUserAt:     data.first_user_at ?? null,
       latestUserAt:    data.latest_user_at ?? null,
+      isLive:          true,
     };
   } catch (err) {
     console.error("[SecondaryDB] fetchCollegeStats exception:", err);
-    return null;
+    return {
+      id: "",
+      name: "",
+      canonicalDomain: domain,
+      city: null,
+      status: null,
+      totalUsers: 0,
+      studentCount: 0,
+      alumniCount: 0,
+      facultyCount: 0,
+      activeUsers7d: 0,
+      clubsCount: 0,
+      eventsCount: 0,
+      postsCount: 0,
+      statsRefreshedAt: null,
+      firstUserAt: null,
+      latestUserAt: null,
+      isLive: false,
+      error: err instanceof Error ? err.message : "Unknown connection exception",
+    };
   }
 }
 
-/** Legacy compat */
 export async function fetchLiveVerifiedUsers(
   canonicalDomain: string
 ): Promise<number | null> {
   const stats = await fetchCollegeStats(canonicalDomain);
-  return stats ? stats.totalUsers : null;
+  return stats && stats.isLive ? stats.totalUsers : null;
 }

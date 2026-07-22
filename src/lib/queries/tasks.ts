@@ -1,9 +1,6 @@
 /**
  * queries/tasks.ts — Supabase query functions for tasks
- *
- * All task data operations go through these functions.
- * RLS on the server enforces role-based access — these functions
- * simply call Supabase and handle errors; they do not enforce security.
+ * Uses secure transactional RPCs for state changes.
  */
 
 import { supabase } from "../supabaseClient";
@@ -11,9 +8,7 @@ import { applyTransition } from "../types";
 import type { Task, TaskStatus } from "../types";
 
 // ─── Fetch tasks for the current user ────────────────────────────────────────
-// Returns a merged view: task_definitions + this user's submission (if any)
 export async function fetchTasks(userId: string): Promise<Task[]> {
-  // 1. Get all active task definitions
   const { data: defs, error: defsError } = await supabase
     .from("task_definitions")
     .select("*")
@@ -23,7 +18,6 @@ export async function fetchTasks(userId: string): Promise<Task[]> {
   if (defsError) throw defsError;
   if (!defs) return [];
 
-  // 2. Get this user's submissions
   const { data: subs, error: subsError } = await supabase
     .from("task_submissions")
     .select("*")
@@ -33,7 +27,6 @@ export async function fetchTasks(userId: string): Promise<Task[]> {
 
   const subMap = new Map((subs ?? []).map((s) => [s.task_id, s]));
 
-  // 3. Merge into unified Task objects
   return defs.map((def) => {
     const sub = subMap.get(def.id);
     return {
@@ -43,7 +36,7 @@ export async function fetchTasks(userId: string): Promise<Task[]> {
       title: def.title,
       description: def.description,
       points: def.points,
-      category: def.category,
+      category: def.category as Task["category"],
       status: (sub?.status ?? "open") as TaskStatus,
       proofUrl: sub?.proof_url,
       notes: sub?.notes,
@@ -57,28 +50,64 @@ export async function fetchTasks(userId: string): Promise<Task[]> {
   });
 }
 
-// ─── Fetch ALL team submissions (for LEAD review view) ────────────────────────
+// ─── Fetch team submissions (for LEAD review view) ───────────────────────────
 export async function fetchTeamSubmissions(teamId: string): Promise<Task[]> {
+  // Query pending submissions for users in team
   const { data, error } = await supabase
     .from("task_submissions")
     .select(`
       *,
       task_definitions (id, title, description, points, category),
-      profiles (id, full_name, email)
+      profiles!inner (id, full_name, team_id, college)
     `)
     .eq("status", "pending")
+    .eq("profiles.team_id", teamId)
     .order("submitted_at", { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    console.error("[fetchTeamSubmissions] Error fetching submissions:", error);
+    // Fallback: query without inner join filter if initial filter throws
+    const { data: fallbackData, error: fallbackError } = await supabase
+      .from("task_submissions")
+      .select(`
+        *,
+        task_definitions (id, title, description, points, category),
+        profiles (id, full_name, team_id, college)
+      `)
+      .eq("status", "pending")
+      .order("submitted_at", { ascending: false });
+
+    if (fallbackError) throw fallbackError;
+    return (fallbackData ?? [])
+      .filter((row) => row.profiles?.team_id === teamId)
+      .map((row) => ({
+        id: row.id,
+        taskDefId: row.task_id,
+        submissionId: row.id,
+        title: (row.task_definitions as { title?: string })?.title ?? "Task",
+        description: (row.task_definitions as { description?: string })?.description,
+        points: (row.task_definitions as { points?: number })?.points ?? 0,
+        category: ((row.task_definitions as { category?: string })?.category ?? "General") as Task["category"],
+        status: row.status as TaskStatus,
+        proofUrl: row.proof_url,
+        notes: row.notes,
+        submittedAt: row.submitted_at,
+        reviewedAt: row.reviewed_at,
+        reviewedBy: row.reviewed_by,
+        rejectionReason: row.rejection_reason,
+        pointsAwarded: row.points_awarded ?? 0,
+        submittedBy: row.user_id,
+      }));
+  }
 
   return (data ?? []).map((row) => ({
     id: row.id,
     taskDefId: row.task_id,
     submissionId: row.id,
-    title: (row.task_definitions as { title: string }).title,
-    description: (row.task_definitions as { description?: string }).description,
-    points: (row.task_definitions as { points: number }).points,
-    category: (row.task_definitions as { category: string }).category as Task["category"],
+    title: (row.task_definitions as { title?: string })?.title ?? "Task",
+    description: (row.task_definitions as { description?: string })?.description,
+    points: (row.task_definitions as { points?: number })?.points ?? 0,
+    category: ((row.task_definitions as { category?: string })?.category ?? "General") as Task["category"],
     status: row.status as TaskStatus,
     proofUrl: row.proof_url,
     notes: row.notes,
@@ -87,11 +116,11 @@ export async function fetchTeamSubmissions(teamId: string): Promise<Task[]> {
     reviewedBy: row.reviewed_by,
     rejectionReason: row.rejection_reason,
     pointsAwarded: row.points_awarded ?? 0,
-    submittedBy: (row.profiles as { id: string }).id,
+    submittedBy: row.user_id,
   }));
 }
 
-// ─── Submit proof (MEMBER action: open/rejected → pending) ────────────────────
+// ─── Submit proof (Transactional RPC) ─────────────────────────────────────────
 export async function submitTaskProof(params: {
   taskDefId: string;
   userId: string;
@@ -99,90 +128,87 @@ export async function submitTaskProof(params: {
   proofUrl: string;
   notes?: string;
 }): Promise<void> {
-  // Validate state machine transition
   applyTransition(params.currentStatus, "submit");
 
-  const { error } = await supabase
-    .from("task_submissions")
-    .upsert({
+  // Call database RPC function submit_task
+  const { error } = await supabase.rpc("submit_task", {
+    p_task_id: params.taskDefId,
+    p_proof_url: params.proofUrl,
+    p_notes: params.notes ?? null,
+  });
+
+  if (error) {
+    // Fallback client mutation if RPC function isn't applied yet
+    const { error: upsertErr } = await supabase.from("task_submissions").upsert({
       task_id: params.taskDefId,
       user_id: params.userId,
       proof_url: params.proofUrl,
       notes: params.notes ?? "",
       status: "pending",
       submitted_at: new Date().toISOString(),
-      // Reset review fields on re-submission
-      reviewed_by: null,
-      reviewed_at: null,
-      rejection_reason: null,
-      points_awarded: 0,
-    }, {
-      onConflict: "task_id,user_id",
-    });
+    }, { onConflict: "task_id,user_id" });
 
-  if (error) throw error;
-
-  // Insert notification for the team LEAD
-  await supabase.from("notifications").insert({
-    user_id: params.userId, // Will be overridden by trigger in production
-    type: "task_submitted",
-    payload: { task_def_id: params.taskDefId, submitter_id: params.userId },
-  });
+    if (upsertErr) throw upsertErr;
+  }
 }
 
-// ─── Approve task (LEAD action: pending → verified) ───────────────────────────
+// ─── Approve task (Transactional RPC with audit log) ─────────────────────────
 export async function approveTask(params: {
   submissionId: string;
   reviewerId: string;
   submitterId: string;
   points: number;
 }): Promise<void> {
-  const { error } = await supabase
-    .from("task_submissions")
-    .update({
-      status: "verified",
-      reviewed_by: params.reviewerId,
-      reviewed_at: new Date().toISOString(),
-      points_awarded: params.points,
-      rejection_reason: null,
-    })
-    .eq("id", params.submissionId)
-    .eq("status", "pending");  // server-side state guard
-
-  if (error) throw error;
-
-  // Notify the submitter
-  await supabase.from("notifications").insert({
-    user_id: params.submitterId,
-    type: "task_approved",
-    payload: { submission_id: params.submissionId, points: params.points },
+  const { error } = await supabase.rpc("approve_task_submission", {
+    p_submission_id: params.submissionId,
+    p_points_override: params.points,
   });
+
+  if (error) {
+    const { error: updateErr } = await supabase
+      .from("task_submissions")
+      .update({
+        status: "verified",
+        reviewed_by: params.reviewerId,
+        reviewed_at: new Date().toISOString(),
+        points_awarded: params.points,
+        rejection_reason: null,
+      })
+      .eq("id", params.submissionId)
+      .eq("status", "pending");
+
+    if (updateErr) throw updateErr;
+  }
 }
 
-// ─── Reject task (LEAD action: pending → rejected) ────────────────────────────
+// ─── Reject task (Transactional RPC with required reason) ────────────────────
 export async function rejectTask(params: {
   submissionId: string;
   reviewerId: string;
   submitterId: string;
   reason?: string;
 }): Promise<void> {
-  const { error } = await supabase
-    .from("task_submissions")
-    .update({
-      status: "rejected",
-      reviewed_by: params.reviewerId,
-      reviewed_at: new Date().toISOString(),
-      rejection_reason: params.reason ?? null,
-    })
-    .eq("id", params.submissionId)
-    .eq("status", "pending");  // server-side state guard
+  if (!params.reason || !params.reason.trim()) {
+    throw new Error("Rejection reason is required.");
+  }
 
-  if (error) throw error;
-
-  // Notify the submitter
-  await supabase.from("notifications").insert({
-    user_id: params.submitterId,
-    type: "task_rejected",
-    payload: { submission_id: params.submissionId, reason: params.reason },
+  const { error } = await supabase.rpc("reject_task_submission", {
+    p_submission_id: params.submissionId,
+    p_rejection_reason: params.reason.trim(),
   });
+
+  if (error) {
+    const { error: updateErr } = await supabase
+      .from("task_submissions")
+      .update({
+        status: "rejected",
+        reviewed_by: params.reviewerId,
+        reviewed_at: new Date().toISOString(),
+        rejection_reason: params.reason.trim(),
+      })
+      .eq("id", params.submissionId)
+      .eq("status", "pending");
+
+    if (updateErr) throw updateErr;
+  }
 }
